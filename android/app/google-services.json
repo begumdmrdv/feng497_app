@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "594884039526",
+    "project_id": "feng497app",
+    "storage_bucket": "feng497app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:594884039526:android:91b0385de72233d372eea7",
+        "android_client_info": {
+          "package_name": "com.example.feng497_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAsnlv0QSU8Wb2rPuFM-O_2IhdruH9q6OA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
