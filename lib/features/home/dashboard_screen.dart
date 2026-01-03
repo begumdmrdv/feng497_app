@@ -1,7 +1,10 @@
-import 'dart:math';
-import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
+
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -22,55 +25,140 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
+enum _WsState { connecting, connected, error, closed }
+
 class _DashboardScreenState extends State<DashboardScreen> {
   // ----------------------------
   // ✅ WEBSOCKET LIVE DATA
   // ----------------------------
   WebSocketChannel? _channel;
-  final List<double> _wsLiveSeries = <double>[];
-  double? _wsLiveCurrentValue;
+  StreamSubscription? _wsSub;
+
+  double? _wsGlucose;
+  String? _wsStatus;
+  DateTime? _wsTimestamp;
+
+  _WsState _wsState = _WsState.connecting;
+  String? _wsLastError;
 
   final bool _useWebSocketLive = true;
 
-  void _connectWs() {
-    final uri = Uri.parse('ws://10.0.2.2:8000/ws/stream');
-    _channel = WebSocketChannel.connect(uri);
-
-    debugPrint("WS connecting to: $uri");
-
-    _channel!.stream.listen((event) {
-      debugPrint("WS raw: $event");
-
-      try {
-        final obj = jsonDecode(event);
-        if (obj is Map && obj["type"] == "reading") {
-          final data = obj["data"];
-          final g = (data["glucose"] as num).toDouble();
-
-          setState(() {
-            _wsLiveCurrentValue = g;
-            _wsLiveSeries.add(g);
-            if (_wsLiveSeries.length > 60) _wsLiveSeries.removeAt(0);
-          });
-        }
-      } catch (e) {
-        debugPrint("WS parse error: $e");
-      }
-    }, onError: (e) {
-      debugPrint("WS error: $e");
-    }, onDone: () {
-      debugPrint("WS closed");
-    });
+  Uri get _wsUri {
+    // ✅ Web'de: uygulama hangi host'ta açıldıysa ona bağlan (localhost/127.0.0.1/ip)
+    // ✅ Android emulator: 10.0.2.2
+    final host = kIsWeb ? Uri.base.host : '10.0.2.2';
+    return Uri.parse('ws://$host:8000/ws/stream');
   }
 
+  void _connectWs() {
+    final uri = _wsUri;
+    debugPrint("WS connecting to: $uri");
+
+    // eski subscription/kanalı kapat
+    try {
+      _wsSub?.cancel();
+      _channel?.sink.close();
+    } catch (_) {}
+
+    setState(() {
+      _wsState = _WsState.connecting;
+      _wsLastError = null;
+    });
+
+    try {
+      _channel = WebSocketChannel.connect(uri);
+
+      _wsSub = _channel!.stream.listen(
+            (event) {
+          debugPrint("WS raw: $event");
+
+          // ilk mesaj geldiyse bağlantı OK say
+          if (mounted && _wsState != _WsState.connected) {
+            setState(() => _wsState = _WsState.connected);
+          }
+
+          try {
+            final obj = jsonDecode(event);
+            if (obj is! Map) return;
+
+            // Bazı backend'ler {type:"reading", data:{...}} gönderir
+            // Bazıları direkt {timestamp, glucose, status}
+            // Bazıları {data:{...}} ama type yok
+            final Map data = (obj["data"] is Map) ? (obj["data"] as Map) : obj;
+
+            final gRaw = data["glucose"];
+            final sRaw = data["status"];
+            final tRaw = data["timestamp"];
+
+            if (gRaw is! num) return;
+
+            final g = gRaw.toDouble();
+            final status = (sRaw ?? "UNKNOWN").toString();
+
+            DateTime ts;
+            if (tRaw != null) {
+              ts = _parseTimestamp(tRaw) ?? DateTime.now();
+            } else {
+              ts = DateTime.now();
+            }
+
+            if (!mounted) return;
+            setState(() {
+              _wsGlucose = g;
+              _wsStatus = status;
+              _wsTimestamp = ts;
+            });
+          } catch (e) {
+            debugPrint("WS parse error: $e");
+          }
+        },
+        onError: (e) {
+          debugPrint("WS error: $e");
+          if (!mounted) return;
+          setState(() {
+            _wsState = _WsState.error;
+            _wsLastError = e.toString();
+          });
+        },
+        onDone: () {
+          debugPrint("WS closed");
+          if (!mounted) return;
+          setState(() => _wsState = _WsState.closed);
+        },
+      );
+    } catch (e) {
+      debugPrint("WS connect failed: $e");
+      if (!mounted) return;
+      setState(() {
+        _wsState = _WsState.error;
+        _wsLastError = e.toString();
+      });
+    }
+  }
+
+  DateTime? _parseTimestamp(Object raw) {
+    // terminalde: "2026-01-03T17:39:33.372118Z" gibi
+    // ya da epoch, vs.
+    try {
+      return DateTime.parse(raw.toString()).toLocal();
+    } catch (_) {
+      // epoch olabilir
+      try {
+        if (raw is num) {
+          return DateTime.fromMillisecondsSinceEpoch(raw.toInt()).toLocal();
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
 
   @override
   void initState() {
     super.initState();
+
     _months = _buildLast12Months();
     _setDailyMode();
 
-    // ✅ WS'yi başlat
     if (_useWebSocketLive) {
       _connectWs();
     }
@@ -79,6 +167,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void dispose() {
     try {
+      _wsSub?.cancel();
       _channel?.sink.close();
     } catch (_) {}
     super.dispose();
@@ -122,10 +211,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   String _monthLabel(DateTime d) {
-    const names = [
-      "Jan","Feb","Mar","Apr","May","Jun",
-      "Jul","Aug","Sep","Oct","Nov","Dec"
-    ];
+    const names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     return "${names[d.month - 1]} - ${d.year}";
   }
 
@@ -242,26 +328,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return "Last $_selectedRange hours (previous x$_dayWindowOffset)";
   }
 
+  Color _statusColor(String s) {
+    final v = s.toUpperCase();
+    if (v.contains("LOW")) return const Color(0xFFFF9F1C);
+    if (v.contains("HIGH")) return const Color(0xFFE63946);
+    if (v.contains("NORMAL")) return const Color(0xFF2A9D8F);
+    return Colors.black45;
+  }
+
+  String _wsStateLabel() {
+    switch (_wsState) {
+      case _WsState.connecting:
+        return "Connecting…";
+      case _WsState.connected:
+        return "Connected";
+      case _WsState.error:
+        return "Error";
+      case _WsState.closed:
+        return "Closed";
+    }
+  }
+
+  Color _wsStateColor() {
+    switch (_wsState) {
+      case _WsState.connecting:
+        return Colors.orange;
+      case _WsState.connected:
+        return const Color(0xFF2A9D8F);
+      case _WsState.error:
+        return const Color(0xFFE63946);
+      case _WsState.closed:
+        return Colors.black45;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     final displayName =
     (user?.displayName?.trim().isNotEmpty ?? false) ? user!.displayName! : "User";
-
-    // LIVE veriyi burada seçiyoruz:
-    // WS aktifse -> _wsLiveSeries
-    // değilse -> widget.liveSeries
-    final liveSeries = _useWebSocketLive ? _wsLiveSeries : widget.liveSeries;
-
-    final liveValue = _useWebSocketLive
-        ? _wsLiveCurrentValue
-        : (widget.liveCurrentValue ??
-        (liveSeries.isNotEmpty ? liveSeries.last : null));
-
-
-    final liveTrendUp = (liveSeries.length >= 2)
-        ? liveSeries.last >= liveSeries[liveSeries.length - 2]
-        : true;
 
     final chartSeries = _monthlyMode ? _monthlySeries : _dailySeries;
     final mainValue = _monthlyMode ? _monthlyAvgValue : _dailyCurrentValue;
@@ -313,11 +418,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  _LiveGlucoseCard(
-                    liveValue: liveValue,
-                    trendUp: liveTrendUp,
-                    series: liveSeries,
+                  // ✅ LIVE card: değer + status + connection status
+                  _LiveReadingCard(
+                    glucose: _wsGlucose,
+                    status: _wsStatus,
+                    ts: _wsTimestamp,
+                    statusColor: _wsStatus == null ? Colors.black45 : _statusColor(_wsStatus!),
+                    wsStateLabel: _wsStateLabel(),
+                    wsStateColor: _wsStateColor(),
+                    wsUriText: _wsUri.toString(),
+                    wsError: _wsLastError,
+                    onReconnect: _connectWs,
                   ),
+
                   const SizedBox(height: 14),
 
                   _GlucoseHistoryCard(
@@ -358,6 +471,176 @@ class _DashboardScreenState extends State<DashboardScreen> {
         },
       ),
       floatingActionButton: null,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// ✅ Simple Live Reading Card (no chart) + WS status
+// ---------------------------------------------------------------------
+class _LiveReadingCard extends StatelessWidget {
+  final double? glucose;
+  final String? status;
+  final DateTime? ts;
+  final Color statusColor;
+
+  final String wsStateLabel;
+  final Color wsStateColor;
+  final String wsUriText;
+  final String? wsError;
+  final VoidCallback onReconnect;
+
+  const _LiveReadingCard({
+    required this.glucose,
+    required this.status,
+    required this.ts,
+    required this.statusColor,
+    required this.wsStateLabel,
+    required this.wsStateColor,
+    required this.wsUriText,
+    required this.wsError,
+    required this.onReconnect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasData = glucose != null && status != null;
+
+    String timeText = "";
+    if (ts != null) {
+      timeText =
+      "${ts!.hour.toString().padLeft(2, '0')}:${ts!.minute.toString().padLeft(2, '0')}:${ts!.second.toString().padLeft(2, '0')}";
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  "Live Glucose",
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF7B3FF2).withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.circle, size: 10, color: Color(0xFF7B3FF2)),
+                    SizedBox(width: 6),
+                    Text(
+                      "LIVE",
+                      style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF7B3FF2), fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 10),
+
+          // ✅ WS status satırı
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: wsStateColor.withOpacity(0.10),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: wsStateColor.withOpacity(0.25)),
+                ),
+                child: Text(
+                  "WS: $wsStateLabel",
+                  style: TextStyle(color: wsStateColor, fontWeight: FontWeight.w900, fontSize: 12),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  wsUriText,
+                  style: const TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 11),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              IconButton(
+                onPressed: onReconnect,
+                icon: const Icon(Icons.refresh_rounded),
+                tooltip: "Reconnect",
+              )
+            ],
+          ),
+
+          if (wsError != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              wsError!,
+              style: const TextStyle(color: Color(0xFFE63946), fontWeight: FontWeight.w700, fontSize: 11),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+
+          const SizedBox(height: 12),
+
+          if (!hasData) ...[
+            const Text(
+              "Waiting for live data…",
+              style: TextStyle(fontWeight: FontWeight.w800, color: Colors.black54),
+            ),
+            const SizedBox(height: 10),
+            const SizedBox(
+              height: 44,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
+              ),
+            ),
+          ] else ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  glucose!.toStringAsFixed(0),
+                  style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(width: 6),
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 6),
+                  child: Text("mg/dL", style: TextStyle(color: Colors.black54, fontWeight: FontWeight.w700)),
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: statusColor.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: statusColor.withOpacity(0.30)),
+                  ),
+                  child: Text(
+                    status!,
+                    style: TextStyle(color: statusColor, fontWeight: FontWeight.w900),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              timeText.isEmpty ? "" : "Last update: $timeText",
+              style: const TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 12),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -524,136 +807,7 @@ class _TipCard extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------
-// Live card
-// ---------------------------------------------------------------------
-class _LiveGlucoseCard extends StatelessWidget {
-  final double? liveValue;
-  final bool trendUp;
-  final List<double> series;
-
-  const _LiveGlucoseCard({
-    required this.liveValue,
-    required this.trendUp,
-    required this.series,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final hasData = series.isNotEmpty && liveValue != null;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  "Live Glucose",
-                  style: TextStyle(fontWeight: FontWeight.w900),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF7B3FF2).withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.circle, size: 10, color: Color(0xFF7B3FF2)),
-                    SizedBox(width: 6),
-                    Text(
-                      "LIVE",
-                      style: TextStyle(
-                        fontWeight: FontWeight.w900,
-                        color: Color(0xFF7B3FF2),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          if (!hasData) ...[
-            const Text(
-              "Waiting for live data…",
-              style: TextStyle(fontWeight: FontWeight.w800, color: Colors.black54),
-            ),
-            const SizedBox(height: 10),
-            AspectRatio(
-              aspectRatio: 2.6,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF7F7F7),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Center(
-                  child: SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              ),
-            ),
-          ] else ...[
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  "${liveValue!.toStringAsFixed(0)}",
-                  style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w900),
-                ),
-                const SizedBox(width: 6),
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 5),
-                  child: Text(
-                    "mg/dl",
-                    style: TextStyle(color: Colors.black54, fontWeight: FontWeight.w700),
-                  ),
-                ),
-                const Spacer(),
-                Icon(
-                  trendUp ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
-                  color: const Color(0xFF7B3FF2),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            AspectRatio(
-              aspectRatio: 2.6,
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF7F7F7),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: _MiniLineChart(values: series),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              "Real-time values are provided by the smartwatch module.",
-              style: TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 11),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------
-// History card + helpers (aynı)
+// History card + helpers (senin aynı yapın)
 // ---------------------------------------------------------------------
 class _GlucoseHistoryCard extends StatelessWidget {
   final bool monthlyMode;
@@ -879,10 +1033,7 @@ class _MonthItem {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-          other is _MonthItem &&
-              runtimeType == other.runtimeType &&
-              year == other.year &&
-              month == other.month;
+          other is _MonthItem && runtimeType == other.runtimeType && year == other.year && month == other.month;
 
   @override
   int get hashCode => year.hashCode ^ month.hashCode;
@@ -909,11 +1060,7 @@ class _Pill extends StatelessWidget {
         ? const Color(0xFFEDEDED)
         : const Color(0xFFEDEDED).withOpacity(0.5);
 
-    final fg = selected
-        ? Colors.white
-        : enabled
-        ? Colors.black87
-        : Colors.black38;
+    final fg = selected ? Colors.white : (enabled ? Colors.black87 : Colors.black38);
 
     return InkWell(
       borderRadius: BorderRadius.circular(14),
@@ -923,11 +1070,7 @@ class _Pill extends StatelessWidget {
         decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14)),
         child: Text(
           text,
-          style: TextStyle(
-            color: fg,
-            fontWeight: FontWeight.w700,
-            fontSize: 12,
-          ),
+          style: TextStyle(color: fg, fontWeight: FontWeight.w700, fontSize: 12),
         ),
       ),
     );
@@ -935,7 +1078,7 @@ class _Pill extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------
-// Mini chart
+// Mini chart (history kısmı için aynı)
 // ---------------------------------------------------------------------
 class _MiniLineChart extends StatelessWidget {
   final List<double> values;
