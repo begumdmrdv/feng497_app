@@ -32,17 +32,31 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
+    FocusScope.of(context).unfocus(); // klavyeyi kapat
+
     setState(() => _loading = true);
     try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
+      final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: email,
         password: pass,
       );
-      // If you use a shell/home route, navigate there:
-      // Navigator.pushReplacementNamed(context, '/home');
+
+      debugPrint("✅ LOGIN OK: ${cred.user?.uid}");
+
+      if (!mounted) return;
+
+      // ✅ YÖNLENDİRME (1 tanesini seç)
+      Navigator.of(context).pushReplacementNamed('/home');
+
+      // Eğer route kullanmıyorsan direkt widget:
+      // Navigator.of(context).pushReplacement(
+      //   MaterialPageRoute(builder: (_) => const HomeShell()),
+      // );
     } on FirebaseAuthException catch (e) {
+      debugPrint("❌ LOGIN ERROR: ${e.code} - ${e.message}");
       _toast(_friendlyAuthError(e));
-    } catch (_) {
+    } catch (e) {
+      debugPrint("❌ LOGIN UNKNOWN ERROR: $e");
       _toast("Something went wrong. Please try again.");
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -62,8 +76,10 @@ class _LoginScreenState extends State<LoginScreen> {
       await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
       _toast("Password reset email sent. Check your inbox.");
     } on FirebaseAuthException catch (e) {
+      debugPrint("❌ RESET ERROR: ${e.code} - ${e.message}");
       _toast(_friendlyAuthError(e));
-    } catch (_) {
+    } catch (e) {
+      debugPrint("❌ RESET UNKNOWN ERROR: $e");
       _toast("Could not send reset email. Please try again.");
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -84,12 +100,16 @@ class _LoginScreenState extends State<LoginScreen> {
         return "Too many attempts. Please try again later.";
       case 'network-request-failed':
         return "Network error. Check your connection.";
+      case 'operation-not-allowed':
+        return "Email/password sign-in is not enabled in Firebase.";
       default:
         return e.message ?? "Authentication error.";
     }
   }
 
   void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
@@ -119,7 +139,7 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
 
-          // Subtle grain / blur feel
+          // Subtle blur
           Positioned.fill(
             child: IgnorePointer(
               child: BackdropFilter(
@@ -156,13 +176,12 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         child: Column(
                           children: [
-                            // logo container
                             Container(
                               width: 92,
                               height: 92,
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.85),
+                                color: Colors.white.withValues(alpha: 0.90),
                                 borderRadius: BorderRadius.circular(26),
                                 boxShadow: [
                                   BoxShadow(
@@ -174,10 +193,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               ),
                               child: ClipRRect(
                                 borderRadius: BorderRadius.circular(18),
-                                child: Image.asset(
-                                  'assets/images/logo.png',
-                                  fit: BoxFit.cover,
-                                ),
+                                child: _LogoAsset(), // ✅ otomatik jpg/png seçer
                               ),
                             ),
                             const SizedBox(height: 12),
@@ -229,6 +245,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               hint: "Email",
                               icon: Icons.person_outline_rounded,
                               keyboardType: TextInputType.emailAddress,
+                              textInputAction: TextInputAction.next,
                             ),
                             const SizedBox(height: 12),
                             _Field(
@@ -236,17 +253,20 @@ class _LoginScreenState extends State<LoginScreen> {
                               hint: "Password",
                               icon: Icons.lock_outline_rounded,
                               obscure: _hidePass,
+                              textInputAction: TextInputAction.done,
+                              onSubmitted: (_) => _loading ? null : _login(),
                               trailing: IconButton(
                                 onPressed: () => setState(() => _hidePass = !_hidePass),
                                 icon: Icon(
-                                  _hidePass ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                                  _hidePass
+                                      ? Icons.visibility_off_rounded
+                                      : Icons.visibility_rounded,
                                   color: Colors.white.withValues(alpha: 0.90),
                                 ),
                               ),
                             ),
                             const SizedBox(height: 10),
 
-                            // Forgot password
                             Align(
                               alignment: Alignment.centerRight,
                               child: TextButton(
@@ -263,7 +283,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                             const SizedBox(height: 6),
 
-                            // Login button
                             SizedBox(
                               width: double.infinity,
                               height: 52,
@@ -295,7 +314,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                             const SizedBox(height: 12),
 
-                            // Sign up row
                             Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
@@ -308,7 +326,6 @@ class _LoginScreenState extends State<LoginScreen> {
                                 ),
                                 GestureDetector(
                                   onTap: () {
-                                    // Your route:
                                     // Navigator.pushNamed(context, '/register');
                                   },
                                   child: const Text(
@@ -325,7 +342,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
                             const SizedBox(height: 14),
 
-                            // Social buttons (UI only)
                             Row(
                               children: [
                                 Expanded(
@@ -362,6 +378,23 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
+/// ✅ logo.jpg varsa onu, yoksa logo.png dener
+class _LogoAsset extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Image.asset(
+      'assets/images/logo.jpg',
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) {
+        return Image.asset(
+          'assets/images/logo.png',
+          fit: BoxFit.cover,
+        );
+      },
+    );
+  }
+}
+
 class _Field extends StatelessWidget {
   final TextEditingController controller;
   final String hint;
@@ -369,6 +402,8 @@ class _Field extends StatelessWidget {
   final bool obscure;
   final Widget? trailing;
   final TextInputType? keyboardType;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
 
   const _Field({
     required this.controller,
@@ -377,6 +412,8 @@ class _Field extends StatelessWidget {
     this.obscure = false,
     this.trailing,
     this.keyboardType,
+    this.textInputAction,
+    this.onSubmitted,
   });
 
   @override
@@ -398,6 +435,8 @@ class _Field extends StatelessWidget {
               controller: controller,
               obscureText: obscure,
               keyboardType: keyboardType,
+              textInputAction: textInputAction,
+              onSubmitted: onSubmitted,
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.w700,
