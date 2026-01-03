@@ -1,9 +1,6 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
-import 'register_screen.dart';
-import '../home/home_shell.dart';
-
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -16,7 +13,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailC = TextEditingController();
   final _passC = TextEditingController();
 
-  bool _obscure = true;
+  bool _hidePass = true;
   bool _loading = false;
 
   @override
@@ -26,37 +23,12 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _toast(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg)),
-    );
-  }
-
-  String _friendlyAuthError(FirebaseAuthException e) {
-    switch (e.code) {
-      case 'invalid-email':
-        return "Invalid email format.";
-      case 'user-not-found':
-        return "No user found with this email.";
-      case 'wrong-password':
-        return "Incorrect password.";
-      case 'invalid-credential':
-        return "Invalid email or password.";
-      case 'user-disabled':
-        return "This account has been disabled.";
-      case 'too-many-requests':
-        return "Too many attempts. Try again later.";
-      default:
-        return e.message ?? "Login failed.";
-    }
-  }
-
   Future<void> _login() async {
     final email = _emailC.text.trim();
     final pass = _passC.text;
 
     if (email.isEmpty || pass.isEmpty) {
-      _toast("Please enter email and password.");
+      _toast("Please enter your email and password.");
       return;
     }
 
@@ -66,14 +38,8 @@ class _LoginScreenState extends State<LoginScreen> {
         email: email,
         password: pass,
       );
-
-      await FirebaseAuth.instance.currentUser?.reload();
-
-      if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeShell()),
-      );
-
+      // If you use a shell/home route, navigate there:
+      // Navigator.pushReplacementNamed(context, '/home');
     } on FirebaseAuthException catch (e) {
       _toast(_friendlyAuthError(e));
     } catch (_) {
@@ -83,251 +49,382 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  Future<void> _resetPassword() async {
+  Future<void> _forgotPassword() async {
     final email = _emailC.text.trim();
+
     if (email.isEmpty) {
-      _toast("Enter your email to reset your password.");
+      _toast("Please type your email first.");
       return;
     }
+
+    setState(() => _loading = true);
     try {
       await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
-      _toast("Password reset email sent 📩");
+      _toast("Password reset email sent. Check your inbox.");
     } on FirebaseAuthException catch (e) {
       _toast(_friendlyAuthError(e));
+    } catch (_) {
+      _toast("Could not send reset email. Please try again.");
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
+  }
+
+  String _friendlyAuthError(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'invalid-email':
+        return "Invalid email address.";
+      case 'user-not-found':
+        return "No user found with this email.";
+      case 'wrong-password':
+        return "Incorrect password.";
+      case 'user-disabled':
+        return "This user account is disabled.";
+      case 'too-many-requests':
+        return "Too many attempts. Please try again later.";
+      case 'network-request-failed':
+        return "Network error. Check your connection.";
+      default:
+        return e.message ?? "Authentication error.";
+    }
+  }
+
+  void _toast(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.sizeOf(context);
+    const primary = Color(0xFF7B3FF2);
+    const bgTop = Color(0xFF7B3FF2);
+    const bgBottom = Color(0xFFCDA1FF);
 
     return Scaffold(
-      body: Container(
-        width: double.infinity,
-        height: double.infinity,
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Color(0xFF6C2BD9),
-              Color(0xFF9B5CFF),
-              Color(0xFFE2C9FF),
-            ],
-          ),
-        ),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 22),
-            child: Column(
-              children: [
-                SizedBox(height: size.height * 0.07),
-
-                Container(
-                  width: 86,
-                  height: 86,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(28),
-                  ),
-                  child: const Icon(
-                    Icons.smart_toy_outlined,
-                    color: Colors.white,
-                    size: 48,
-                  ),
-                ),
-
-                const SizedBox(height: 26),
-
-                const Text(
-                  "Welcome Back!",
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 30,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-
-                const SizedBox(height: 30),
-
-                _RoundedField(
-                  controller: _emailC,
-                  hint: "Email",
-                  icon: Icons.person_outline,
-                  keyboardType: TextInputType.emailAddress,
-                ),
-                const SizedBox(height: 14),
-
-                _RoundedField(
-                  controller: _passC,
-                  hint: "Password",
-                  icon: Icons.lock_outline,
-                  obscureText: _obscure,
-                  suffix: IconButton(
-                    onPressed: () => setState(() => _obscure = !_obscure),
-                    icon: Icon(
-                      _obscure ? Icons.visibility_off : Icons.visibility,
-                      color: Colors.white.withOpacity(0.85),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 10),
-
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: _loading ? null : _resetPassword,
-                    child: const Text(
-                      "Forgot password?",
-                      style: TextStyle(color: Colors.white),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 10),
-
-                SizedBox(
-                  width: double.infinity,
-                  height: 52,
-                  child: ElevatedButton(
-                    onPressed: _loading ? null : _login,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF5A21D6),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(18),
-                      ),
-                      elevation: 0,
-                    ),
-                    child: _loading
-                        ? const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                        : const Text(
-                      "Log In",
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 14),
-
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      "Don't have an account?  ",
-                      style: TextStyle(color: Colors.white.withOpacity(0.9)),
-                    ),
-                    InkWell(
-                      onTap: _loading
-                          ? null
-                          : () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const RegisterScreen(),
-                          ),
-                        );
-                      },
-                      child: const Text(
-                        "Sign Up",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 24),
-
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    _SocialPillButton(
-                      icon: Icons.g_mobiledata,
-                      label: "Google",
-                      onTap: () {
-                        _toast("Google Sign-In (UI only) – we will add it later.");
-                      },
-                    ),
-                    const SizedBox(width: 14),
-                    _SocialPillButton(
-                      icon: Icons.apple,
-                      label: "Apple",
-                      onTap: () {
-                        _toast("Apple Sign-In (UI only) – we will add it later.");
-                      },
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 28),
-              ],
+      backgroundColor: const Color(0xFFF4F1E8),
+      body: Stack(
+        children: [
+          // Gradient background
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [bgTop, bgBottom],
+              ),
             ),
           ),
-        ),
+
+          // Subtle grain / blur feel
+          Positioned.fill(
+            child: IgnorePointer(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                child: Container(color: Colors.white.withValues(alpha: 0.06)),
+              ),
+            ),
+          ),
+
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: Column(
+                    children: [
+                      // Logo card
+                      Container(
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(26),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.22),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              blurRadius: 26,
+                              offset: const Offset(0, 16),
+                              color: Colors.black.withValues(alpha: 0.18),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          children: [
+                            // logo container
+                            Container(
+                              width: 92,
+                              height: 92,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.85),
+                                borderRadius: BorderRadius.circular(26),
+                                boxShadow: [
+                                  BoxShadow(
+                                    blurRadius: 18,
+                                    offset: const Offset(0, 10),
+                                    color: Colors.black.withValues(alpha: 0.14),
+                                  ),
+                                ],
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(18),
+                                child: Image.asset(
+                                  'assets/images/logo.png',
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            const Text(
+                              "DermaGly",
+                              style: TextStyle(
+                                fontSize: 26,
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              "Sudor Glyco Sense",
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white.withValues(alpha: 0.85),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      // Form card
+                      Container(
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.22),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              blurRadius: 26,
+                              offset: const Offset(0, 14),
+                              color: Colors.black.withValues(alpha: 0.16),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          children: [
+                            _Field(
+                              controller: _emailC,
+                              hint: "Email",
+                              icon: Icons.person_outline_rounded,
+                              keyboardType: TextInputType.emailAddress,
+                            ),
+                            const SizedBox(height: 12),
+                            _Field(
+                              controller: _passC,
+                              hint: "Password",
+                              icon: Icons.lock_outline_rounded,
+                              obscure: _hidePass,
+                              trailing: IconButton(
+                                onPressed: () => setState(() => _hidePass = !_hidePass),
+                                icon: Icon(
+                                  _hidePass ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                                  color: Colors.white.withValues(alpha: 0.90),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+
+                            // Forgot password
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton(
+                                onPressed: _loading ? null : _forgotPassword,
+                                child: const Text(
+                                  "Forgot password?",
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 6),
+
+                            // Login button
+                            SizedBox(
+                              width: double.infinity,
+                              height: 52,
+                              child: ElevatedButton(
+                                onPressed: _loading ? null : _login,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: primary.withValues(alpha: 0.95),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(18),
+                                  ),
+                                  elevation: 0,
+                                ),
+                                child: _loading
+                                    ? const SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                                    : const Text(
+                                  "Log In",
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w900,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 12),
+
+                            // Sign up row
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  "Don't have an account? ",
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.88),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: () {
+                                    // Your route:
+                                    // Navigator.pushNamed(context, '/register');
+                                  },
+                                  child: const Text(
+                                    "Sign Up",
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w900,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            const SizedBox(height: 14),
+
+                            // Social buttons (UI only)
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _SocialButton(
+                                    label: "Google",
+                                    icon: Icons.g_mobiledata_rounded,
+                                    onTap: _loading ? null : () => _toast("Google sign-in not wired yet."),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: _SocialButton(
+                                    label: "Apple",
+                                    icon: Icons.apple_rounded,
+                                    onTap: _loading ? null : () => _toast("Apple sign-in not wired yet."),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 18),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-class _RoundedField extends StatelessWidget {
+class _Field extends StatelessWidget {
   final TextEditingController controller;
   final String hint;
   final IconData icon;
+  final bool obscure;
+  final Widget? trailing;
   final TextInputType? keyboardType;
-  final bool obscureText;
-  final Widget? suffix;
 
-  const _RoundedField({
+  const _Field({
     required this.controller,
     required this.hint,
     required this.icon,
+    this.obscure = false,
+    this.trailing,
     this.keyboardType,
-    this.obscureText = false,
-    this.suffix,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 52,
+      height: 54,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.18),
+        color: Colors.white.withValues(alpha: 0.18),
         borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.20)),
       ),
-      child: TextField(
-        controller: controller,
-        keyboardType: keyboardType,
-        obscureText: obscureText,
-        style: const TextStyle(color: Colors.white),
-        decoration: InputDecoration(
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          prefixIcon: Icon(icon, color: Colors.white.withOpacity(0.9)),
-          suffixIcon: suffix,
-          hintText: hint,
-          hintStyle: TextStyle(color: Colors.white.withOpacity(0.7)),
-        ),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white.withValues(alpha: 0.92)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: TextField(
+              controller: controller,
+              obscureText: obscure,
+              keyboardType: keyboardType,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+              ),
+              decoration: InputDecoration(
+                border: InputBorder.none,
+                hintText: hint,
+                hintStyle: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.72),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+          if (trailing != null) trailing!,
+        ],
       ),
     );
   }
 }
 
-class _SocialPillButton extends StatelessWidget {
+class _SocialButton extends StatelessWidget {
   final String label;
   final IconData icon;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
-  const _SocialPillButton({
+  const _SocialButton({
     required this.label,
     required this.icon,
     required this.onTap,
@@ -335,29 +432,25 @@ class _SocialPillButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: onTap,
-      child: Container(
-        width: 130,
-        height: 48,
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.18),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white.withOpacity(0.18)),
+    return SizedBox(
+      height: 48,
+      child: OutlinedButton(
+        onPressed: onTap,
+        style: OutlinedButton.styleFrom(
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.30)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          backgroundColor: Colors.white.withValues(alpha: 0.12),
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: Colors.white),
+            Icon(icon, color: Colors.white.withValues(alpha: 0.92)),
             const SizedBox(width: 8),
             Text(
               label,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w900,
               ),
             ),
           ],
@@ -366,4 +459,3 @@ class _SocialPillButton extends StatelessWidget {
     );
   }
 }
-
