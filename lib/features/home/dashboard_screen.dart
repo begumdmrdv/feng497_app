@@ -25,7 +25,7 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-enum _WsState { connecting, connected, error, closed }
+enum _WsState { connecting, open, closed, error }
 
 class _DashboardScreenState extends State<DashboardScreen> {
   // ----------------------------
@@ -33,123 +33,130 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // ----------------------------
   WebSocketChannel? _channel;
   StreamSubscription? _wsSub;
+  Timer? _reconnectTimer;
+
+  _WsState _wsState = _WsState.closed;
+  String? _wsLastError;
 
   double? _wsGlucose;
   String? _wsStatus;
   DateTime? _wsTimestamp;
 
-  _WsState _wsState = _WsState.connecting;
-  String? _wsLastError;
-
-  final bool _useWebSocketLive = true;
-
+  // Web / Android emulator host difference
   Uri get _wsUri {
-    // ✅ Web'de: uygulama hangi host'ta açıldıysa ona bağlan (localhost/127.0.0.1/ip)
-    // ✅ Android emulator: 10.0.2.2
-    final host = kIsWeb ? Uri.base.host : '10.0.2.2';
+    final host = kIsWeb ? 'localhost' : '10.0.2.2';
+    // ✅ Burayı backend’ine göre tek yerden değiştir:
     return Uri.parse('ws://$host:8000/ws/stream');
   }
 
-  void _connectWs() {
+  void _setWsState(_WsState s, {String? err}) {
+    if (!mounted) return;
+    setState(() {
+      _wsState = s;
+      _wsLastError = err;
+    });
+  }
+
+  void _connectWs({bool manual = false}) {
+    // önce eski bağlantıyı kapat
+    _cleanupWs();
+
     final uri = _wsUri;
     debugPrint("WS connecting to: $uri");
-
-    // eski subscription/kanalı kapat
-    try {
-      _wsSub?.cancel();
-      _channel?.sink.close();
-    } catch (_) {}
-
-    setState(() {
-      _wsState = _WsState.connecting;
-      _wsLastError = null;
-    });
+    _setWsState(_WsState.connecting);
 
     try {
       _channel = WebSocketChannel.connect(uri);
 
       _wsSub = _channel!.stream.listen(
             (event) {
+          // Bağlantı aktif mesaj alıyorsa OPEN say
+          if (_wsState != _WsState.open) _setWsState(_WsState.open);
+
           debugPrint("WS raw: $event");
-
-          // ilk mesaj geldiyse bağlantı OK say
-          if (mounted && _wsState != _WsState.connected) {
-            setState(() => _wsState = _WsState.connected);
-          }
-
-          try {
-            final obj = jsonDecode(event);
-            if (obj is! Map) return;
-
-            // Bazı backend'ler {type:"reading", data:{...}} gönderir
-            // Bazıları direkt {timestamp, glucose, status}
-            // Bazıları {data:{...}} ama type yok
-            final Map data = (obj["data"] is Map) ? (obj["data"] as Map) : obj;
-
-            final gRaw = data["glucose"];
-            final sRaw = data["status"];
-            final tRaw = data["timestamp"];
-
-            if (gRaw is! num) return;
-
-            final g = gRaw.toDouble();
-            final status = (sRaw ?? "UNKNOWN").toString();
-
-            DateTime ts;
-            if (tRaw != null) {
-              ts = _parseTimestamp(tRaw) ?? DateTime.now();
-            } else {
-              ts = DateTime.now();
-            }
-
-            if (!mounted) return;
-            setState(() {
-              _wsGlucose = g;
-              _wsStatus = status;
-              _wsTimestamp = ts;
-            });
-          } catch (e) {
-            debugPrint("WS parse error: $e");
-          }
+          _handleWsEvent(event);
         },
         onError: (e) {
           debugPrint("WS error: $e");
-          if (!mounted) return;
-          setState(() {
-            _wsState = _WsState.error;
-            _wsLastError = e.toString();
-          });
+          _setWsState(_WsState.error, err: e.toString());
+          _scheduleReconnect();
         },
         onDone: () {
           debugPrint("WS closed");
-          if (!mounted) return;
-          setState(() => _wsState = _WsState.closed);
+          _setWsState(_WsState.closed);
+          _scheduleReconnect();
         },
+        cancelOnError: true,
       );
     } catch (e) {
       debugPrint("WS connect failed: $e");
-      if (!mounted) return;
-      setState(() {
-        _wsState = _WsState.error;
-        _wsLastError = e.toString();
-      });
+      _setWsState(_WsState.error, err: e.toString());
+      _scheduleReconnect();
     }
   }
 
-  DateTime? _parseTimestamp(Object raw) {
-    // terminalde: "2026-01-03T17:39:33.372118Z" gibi
-    // ya da epoch, vs.
+  void _handleWsEvent(dynamic event) {
     try {
-      return DateTime.parse(raw.toString()).toLocal();
-    } catch (_) {
-      // epoch olabilir
-      try {
-        if (raw is num) {
-          return DateTime.fromMillisecondsSinceEpoch(raw.toInt()).toLocal();
-        }
-      } catch (_) {}
+      final obj = jsonDecode(event.toString());
+      if (obj is! Map) return;
+
+      // 2 formatı da destekle:
+      // 1) {"type":"reading","data":{...}}
+      // 2) {"glucose":...,"status":...,"timestamp":...}
+      Map data;
+      if (obj.containsKey("data") && obj["data"] is Map) {
+        data = obj["data"] as Map;
+      } else {
+        data = obj;
+      }
+
+      final gRaw = data["glucose"];
+      final sRaw = data["status"];
+      final tRaw = data["timestamp"];
+
+      if (gRaw is! num) return;
+
+      final g = gRaw.toDouble();
+      final status = (sRaw ?? "UNKNOWN").toString();
+
+      DateTime ts;
+      if (tRaw != null) {
+        ts = DateTime.tryParse(tRaw.toString())?.toLocal() ?? DateTime.now();
+      } else {
+        ts = DateTime.now();
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _wsGlucose = g;
+        _wsStatus = status;
+        _wsTimestamp = ts;
+      });
+    } catch (e) {
+      debugPrint("WS parse error: $e");
     }
-    return null;
+  }
+
+  void _scheduleReconnect() {
+    // zaten reconnect planlıysa tekrar planlama
+    if (_reconnectTimer?.isActive ?? false) return;
+
+    // 2 saniye sonra tekrar dene (basit)
+    _reconnectTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      _connectWs();
+    });
+  }
+
+  void _cleanupWs() {
+    try {
+      _wsSub?.cancel();
+      _wsSub = null;
+    } catch (_) {}
+    try {
+      _channel?.sink.close();
+      _channel = null;
+    } catch (_) {}
   }
 
   @override
@@ -159,17 +166,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _months = _buildLast12Months();
     _setDailyMode();
 
-    if (_useWebSocketLive) {
-      _connectWs();
-    }
+    // ✅ Başlat
+    _connectWs();
   }
 
   @override
   void dispose() {
-    try {
-      _wsSub?.cancel();
-      _channel?.sink.close();
-    } catch (_) {}
+    _reconnectTimer?.cancel();
+    _cleanupWs();
     super.dispose();
   }
 
@@ -339,26 +343,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _wsStateLabel() {
     switch (_wsState) {
       case _WsState.connecting:
-        return "Connecting…";
-      case _WsState.connected:
-        return "Connected";
-      case _WsState.error:
-        return "Error";
+        return "WS: Connecting";
+      case _WsState.open:
+        return "WS: Open";
       case _WsState.closed:
-        return "Closed";
-    }
-  }
-
-  Color _wsStateColor() {
-    switch (_wsState) {
-      case _WsState.connecting:
-        return Colors.orange;
-      case _WsState.connected:
-        return const Color(0xFF2A9D8F);
+        return "WS: Closed";
       case _WsState.error:
-        return const Color(0xFFE63946);
-      case _WsState.closed:
-        return Colors.black45;
+        return "WS: Error";
     }
   }
 
@@ -374,6 +365,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final trendUp = chartSeries.length >= 2
         ? chartSeries.last >= chartSeries[chartSeries.length - 2]
         : true;
+
+    final statusColor = (_wsStatus == null) ? Colors.black45 : _statusColor(_wsStatus!);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF4F1E8),
@@ -418,17 +411,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  // ✅ LIVE card: değer + status + connection status
                   _LiveReadingCard(
                     glucose: _wsGlucose,
                     status: _wsStatus,
                     ts: _wsTimestamp,
-                    statusColor: _wsStatus == null ? Colors.black45 : _statusColor(_wsStatus!),
-                    wsStateLabel: _wsStateLabel(),
-                    wsStateColor: _wsStateColor(),
-                    wsUriText: _wsUri.toString(),
-                    wsError: _wsLastError,
-                    onReconnect: _connectWs,
+                    statusColor: statusColor,
+                    wsLabel: _wsStateLabel(),
+                    wsUri: _wsUri.toString(),
+                    onReconnect: () => _connectWs(manual: true),
+                    lastError: _wsLastError,
                   ),
 
                   const SizedBox(height: 14),
@@ -476,7 +467,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 // ---------------------------------------------------------------------
-// ✅ Simple Live Reading Card (no chart) + WS status
+// ✅ Live Reading Card (no chart) + WS state info
 // ---------------------------------------------------------------------
 class _LiveReadingCard extends StatelessWidget {
   final double? glucose;
@@ -484,33 +475,25 @@ class _LiveReadingCard extends StatelessWidget {
   final DateTime? ts;
   final Color statusColor;
 
-  final String wsStateLabel;
-  final Color wsStateColor;
-  final String wsUriText;
-  final String? wsError;
+  final String wsLabel;
+  final String wsUri;
   final VoidCallback onReconnect;
+  final String? lastError;
 
   const _LiveReadingCard({
     required this.glucose,
     required this.status,
     required this.ts,
     required this.statusColor,
-    required this.wsStateLabel,
-    required this.wsStateColor,
-    required this.wsUriText,
-    required this.wsError,
+    required this.wsLabel,
+    required this.wsUri,
     required this.onReconnect,
+    required this.lastError,
   });
 
   @override
   Widget build(BuildContext context) {
     final hasData = glucose != null && status != null;
-
-    String timeText = "";
-    if (ts != null) {
-      timeText =
-      "${ts!.hour.toString().padLeft(2, '0')}:${ts!.minute.toString().padLeft(2, '0')}:${ts!.second.toString().padLeft(2, '0')}";
-    }
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -521,10 +504,7 @@ class _LiveReadingCard extends StatelessWidget {
           Row(
             children: [
               const Expanded(
-                child: Text(
-                  "Live Glucose",
-                  style: TextStyle(fontWeight: FontWeight.w900),
-                ),
+                child: Text("Live Glucose", style: TextStyle(fontWeight: FontWeight.w900)),
               ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -536,10 +516,7 @@ class _LiveReadingCard extends StatelessWidget {
                   children: [
                     Icon(Icons.circle, size: 10, color: Color(0xFF7B3FF2)),
                     SizedBox(width: 6),
-                    Text(
-                      "LIVE",
-                      style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF7B3FF2), fontSize: 12),
-                    ),
+                    Text("LIVE", style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF7B3FF2), fontSize: 12)),
                   ],
                 ),
               ),
@@ -548,49 +525,47 @@ class _LiveReadingCard extends StatelessWidget {
 
           const SizedBox(height: 10),
 
-          // ✅ WS status satırı
+          // WS status row
           Row(
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
-                  color: wsStateColor.withOpacity(0.10),
+                  color: Colors.black.withOpacity(0.06),
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: wsStateColor.withOpacity(0.25)),
                 ),
                 child: Text(
-                  "WS: $wsStateLabel",
-                  style: TextStyle(color: wsStateColor, fontWeight: FontWeight.w900, fontSize: 12),
+                  wsLabel,
+                  style: const TextStyle(fontWeight: FontWeight.w800, color: Colors.black54, fontSize: 12),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  wsUriText,
-                  style: const TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 11),
-                  maxLines: 1,
+                  wsUri,
+                  style: const TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 12),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
               IconButton(
+                tooltip: "Reconnect",
                 onPressed: onReconnect,
                 icon: const Icon(Icons.refresh_rounded),
-                tooltip: "Reconnect",
-              )
+              ),
             ],
           ),
 
-          if (wsError != null) ...[
+          if (lastError != null) ...[
             const SizedBox(height: 6),
             Text(
-              wsError!,
-              style: const TextStyle(color: Color(0xFFE63946), fontWeight: FontWeight.w700, fontSize: 11),
+              lastError!,
+              style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700, fontSize: 11),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
           ],
 
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
 
           if (!hasData) ...[
             const Text(
@@ -635,7 +610,9 @@ class _LiveReadingCard extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             Text(
-              timeText.isEmpty ? "" : "Last update: $timeText",
+              ts == null
+                  ? ""
+                  : "Last update: ${ts!.hour.toString().padLeft(2, '0')}:${ts!.minute.toString().padLeft(2, '0')}:${ts!.second.toString().padLeft(2, '0')}",
               style: const TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 12),
             ),
           ],
