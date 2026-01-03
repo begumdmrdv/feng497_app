@@ -30,17 +30,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final List<double> _wsLiveSeries = <double>[];
   double? _wsLiveCurrentValue;
 
-  // true ise Live kartı WS'ten gelen veriyi kullanır
   final bool _useWebSocketLive = true;
 
   void _connectWs() {
-    final uri = Uri.parse('ws://10.0.2.2:8000/ws/stream'); // emulator için doğru
+    final uri = Uri.parse('ws://10.0.2.2:8000/ws/stream');
     _channel = WebSocketChannel.connect(uri);
 
     debugPrint("WS connecting to: $uri");
 
     _channel!.stream.listen((event) {
-      debugPrint("WS raw: $event"); // ✅ bunu koy, gerçekten veri geliyor mu göreceğiz
+      debugPrint("WS raw: $event");
 
       try {
         final obj = jsonDecode(event);
