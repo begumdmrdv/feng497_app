@@ -139,7 +139,6 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
           ),
-
           Positioned.fill(
             child: IgnorePointer(
               child: BackdropFilter(
@@ -148,7 +147,6 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
           ),
-
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
@@ -157,7 +155,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   constraints: const BoxConstraints(maxWidth: 420),
                   child: Column(
                     children: [
-                      // ✅ UPDATED: BIGGER, PREMIUM LOGO HEADER
+                      // =========================
+                      // Logo card
+                      // =========================
                       Container(
                         padding: const EdgeInsets.all(18),
                         decoration: BoxDecoration(
@@ -174,50 +174,44 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         child: Column(
                           children: [
-                            // Logo badge (bigger + layered shadows)
+                            // ✅ UPDATED: badge area is FULL logo (no padding)
                             Container(
-                              width: 150,
-                              height: 150,
+                              width: 160,
+                              height: 160,
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(36),
                                 gradient: LinearGradient(
                                   begin: Alignment.topLeft,
                                   end: Alignment.bottomRight,
                                   colors: [
-                                    Colors.white.withOpacity(0.95),
-                                    Colors.white.withOpacity(0.78),
+                                    Colors.white.withOpacity(0.97),
+                                    Colors.white.withOpacity(0.82),
                                   ],
                                 ),
                                 boxShadow: [
                                   BoxShadow(
-                                    blurRadius: 26,
+                                    blurRadius: 28,
                                     offset: const Offset(0, 18),
                                     color: Colors.black.withOpacity(0.22),
                                   ),
                                   BoxShadow(
                                     blurRadius: 10,
-                                    offset: const Offset(0, 4),
-                                    color: Colors.white.withOpacity(0.25),
+                                    offset: const Offset(0, 3),
+                                    color: Colors.white.withOpacity(0.20),
                                   ),
                                 ],
                               ),
-                              child: Center(
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(28),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(14),
-                                    child: Image.asset(
-                                      'assets/images/logo.png',
-                                      fit: BoxFit.contain,
-                                      filterQuality: FilterQuality.high,
-                                      errorBuilder: (_, __, ___) {
-                                        return const Icon(
-                                          Icons.broken_image_rounded,
-                                          size: 44,
-                                        );
-                                      },
-                                    ),
-                                  ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(36),
+                                child: Image.asset(
+                                  'assets/images/logo.png',
+                                  fit: BoxFit.cover, // ✅ fills the entire square
+                                  filterQuality: FilterQuality.high,
+                                  errorBuilder: (_, __, ___) {
+                                    return const Center(
+                                      child: Icon(Icons.broken_image_rounded, size: 48),
+                                    );
+                                  },
                                 ),
                               ),
                             ),
@@ -233,9 +227,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                 letterSpacing: 0.3,
                               ),
                             ),
-
                             const SizedBox(height: 6),
-
                             Text(
                               "Sudor Glyco Sense",
                               style: TextStyle(
@@ -250,7 +242,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 18),
 
+                      // =========================
                       // Form card
+                      // =========================
                       Container(
                         padding: const EdgeInsets.all(18),
                         decoration: BoxDecoration(
@@ -267,100 +261,95 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         child: Column(
                           children: [
-                          _Field(
-                          controller: _emailC,
-                          hint: "Email",
-                          icon: Icons.person_outline_rounded,
-                          keyboardType: TextInputType.emailAddress,
-                          enabled: !_loading,
-                        ),
-                        const SizedBox(height: 12),
-                        _Field(
-                          controller: _passC,
-                          hint: "Password",
-                          icon: Icons.lock_outline_rounded,
-                          obscure: _hidePass,
-                          enabled: !_loading,
-                          trailing: IconButton(
-                            onPressed: _loading ? null : () => setState(() => _hidePass = !_hidePass),
-                            icon: Icon(
-                              _hidePass ? Icons.visibility_off_rounded : Icons.visibility_rounded,
-                              color: Colors.white.withOpacity(0.90),
+                            _Field(
+                              controller: _emailC,
+                              hint: "Email",
+                              icon: Icons.person_outline_rounded,
+                              keyboardType: TextInputType.emailAddress,
+                              enabled: !_loading,
                             ),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: TextButton(
-                            onPressed: _loading ? null : _forgotPassword,
-                            child: const Text(
-                              "Forgot password?",
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                        ),
-
-                        const SizedBox(height: 6),
-
-                        SizedBox(
-                          width: double.infinity,
-                          height: 52,
-                          child: ElevatedButton(
-                            onPressed: _loading ? null : _login,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: primary.withOpacity(0.95),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(18),
-                              ),
-                              elevation: 0,
-                            ),
-                            child: _loading
-                                ? const SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                                : const Text(
-                              "Log In",
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w900,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                        ),
-
-                        const SizedBox(height: 12),
-
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(
-                              "Don't have an account? ",
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(0.88),
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            GestureDetector(
-                              onTap: _goRegister,
-                              child: const Text(
-                                "Sign Up",
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w900,
-                                  decoration: TextDecoration.underline,
+                            const SizedBox(height: 12),
+                            _Field(
+                              controller: _passC,
+                              hint: "Password",
+                              icon: Icons.lock_outline_rounded,
+                              obscure: _hidePass,
+                              enabled: !_loading,
+                              trailing: IconButton(
+                                onPressed: _loading ? null : () => setState(() => _hidePass = !_hidePass),
+                                icon: Icon(
+                                  _hidePass ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                                  color: Colors.white.withOpacity(0.90),
                                 ),
                               ),
                             ),
-                          ],
-                        ),
+                            const SizedBox(height: 10),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton(
+                                onPressed: _loading ? null : _forgotPassword,
+                                child: const Text(
+                                  "Forgot password?",
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 52,
+                              child: ElevatedButton(
+                                onPressed: _loading ? null : _login,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: primary.withOpacity(0.95),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(18),
+                                  ),
+                                  elevation: 0,
+                                ),
+                                child: _loading
+                                    ? const SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                                    : const Text(
+                                  "Log In",
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w900,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  "Don't have an account? ",
+                                  style: TextStyle(
+                                    color: Colors.white.withOpacity(0.88),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: _goRegister,
+                                  child: const Text(
+                                    "Sign Up",
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w900,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ],
                         ),
                       ),

@@ -1,8 +1,10 @@
+import 'dart:math';
 import 'dart:typed_data';
-import 'package:flutter/services.dart' show rootBundle;
+
 import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 class ReportNumbers {
   final DateTime start;
@@ -13,9 +15,9 @@ class ReportNumbers {
   final double cv;
   final double gmi;
 
-  final double tir; // 70-180
-  final double tbr; // <70
-  final double tar; // >180
+  final double tir;
+  final double tbr;
+  final double tar;
 
   ReportNumbers({
     required this.start,
@@ -37,127 +39,141 @@ class ReportPdfBuilder {
   }) async {
     final doc = pw.Document();
 
-    // Logo (optional)
-    pw.ImageProvider? logo;
-    try {
-      final bytes = await rootBundle.load('assets/images/logo.png');
-      logo = pw.MemoryImage(bytes.buffer.asUint8List());
-    } catch (_) {
-      // ignore if asset not found
-    }
+    // ✅ logo asset (pubspec: assets/images/logo.png)
+    final logo = await imageFromAssetBundle('assets/images/logo.png');
 
-    final df = DateFormat("d MMM yyyy");
+    final df = DateFormat("dd MMM yyyy");
+    final meanStr = n.mean.toStringAsFixed(1);
+    final sdStr = n.sd.toStringAsFixed(1);
+    final cvStr = n.cv.toStringAsFixed(1);
+    final gmiStr = n.gmi.toStringAsFixed(1);
 
     doc.addPage(
-      pw.Page(
+      pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(28),
-        build: (ctx) {
-          return pw.Column(
+        margin: const pw.EdgeInsets.fromLTRB(24, 24, 24, 24),
+        build: (_) => [
+          // Header
+          pw.Row(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
-              pw.Row(
-                crossAxisAlignment: pw.CrossAxisAlignment.center,
-                children: [
-                  if (logo != null)
-                    pw.Container(
-                      width: 56,
-                      height: 56,
-                      padding: const pw.EdgeInsets.all(8),
-                      decoration: pw.BoxDecoration(
-                        color: PdfColors.white,
-                        borderRadius: pw.BorderRadius.circular(14),
-                        boxShadow: const [
-                          pw.BoxShadow(
-                            blurRadius: 10,
-                            offset: PdfPoint(0, 6),
-                            color: PdfColor(0, 0, 0, 0.12),
-                          )
-                        ],
-                      ),
-                      child: pw.Image(logo, fit: pw.BoxFit.contain),
-                    ),
-                  pw.SizedBox(width: 12),
-                  pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text(
-                        "DermaGly — Glucose Report (AGP Summary)",
-                        style: pw.TextStyle(
-                          fontSize: 18,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                      pw.SizedBox(height: 4),
-                      pw.Text(
-                        "${df.format(n.start)}  →  ${df.format(n.end)}",
-                        style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey700),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-
-              pw.SizedBox(height: 18),
-
               pw.Container(
-                padding: const pw.EdgeInsets.all(14),
+                width: 58,
+                height: 58,
+                padding: const pw.EdgeInsets.all(10),
                 decoration: pw.BoxDecoration(
                   color: PdfColors.grey100,
-                  borderRadius: pw.BorderRadius.circular(14),
-                ),
-                child: pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    _kpi("Average Glucose", "${n.mean.toStringAsFixed(1)} mg/dL"),
-                    _kpi("GMI", "${n.gmi.toStringAsFixed(1)} %"),
-                    _kpi("SD / CV", "${n.sd.toStringAsFixed(1)} / ${n.cv.toStringAsFixed(1)}%"),
-                  ],
-                ),
-              ),
-
-              pw.SizedBox(height: 14),
-
-              pw.Container(
-                padding: const pw.EdgeInsets.all(14),
-                decoration: pw.BoxDecoration(
-                  color: PdfColors.white,
-                  borderRadius: pw.BorderRadius.circular(14),
+                  borderRadius: pw.BorderRadius.circular(16),
                   border: pw.Border.all(color: PdfColors.grey300),
                 ),
+                child: pw.Image(logo, fit: pw.BoxFit.contain),
+              ),
+              pw.SizedBox(width: 12),
+              pw.Expanded(
                 child: pw.Column(
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
-                    pw.Text("Time in Range (sample-based)", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                    pw.SizedBox(height: 8),
-                    _bar("TIR 70–180", n.tir, PdfColors.green600),
-                    pw.SizedBox(height: 6),
-                    _bar("TBR <70", n.tbr, PdfColors.orange600),
-                    pw.SizedBox(height: 6),
-                    _bar("TAR >180", n.tar, PdfColors.red600),
-                    pw.SizedBox(height: 10),
                     pw.Text(
-                      "Notes: Values are computed from available glucose samples. If sampling interval is regular, percentages approximate time-based metrics.",
-                      style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+                      "DermaGly Glucose Report (AGP Summary)",
+                      style: pw.TextStyle(
+                        fontSize: 16,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                    pw.SizedBox(height: 4),
+                    pw.Text(
+                      "${df.format(n.start)} — ${df.format(n.end)}",
+                      style: pw.TextStyle(fontSize: 10, color: PdfColors.grey700),
                     ),
                   ],
                 ),
               ),
-
-              pw.SizedBox(height: 14),
-
-              pw.Text(
-                "Raw summary (last ${series.length} samples)",
-                style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-              ),
-              pw.SizedBox(height: 6),
-              pw.Text(
-                series.take(60).map((e) => e.toStringAsFixed(1)).join(", ") + (series.length > 60 ? " …" : ""),
-                style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
-              ),
             ],
-          );
-        },
+          ),
+
+          pw.SizedBox(height: 14),
+
+          // KPI strip
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.grey100,
+              borderRadius: pw.BorderRadius.circular(14),
+            ),
+            child: pw.Row(
+              children: [
+                _kpi("Average Glucose", "$meanStr mg/dL"),
+                pw.SizedBox(width: 10),
+                _kpi("GMI", "$gmiStr %"),
+                pw.SizedBox(width: 10),
+                _kpi("SD / CV", "$sdStr / $cvStr%"),
+              ],
+            ),
+          ),
+
+          pw.SizedBox(height: 12),
+
+          // TIR card
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.white,
+              borderRadius: pw.BorderRadius.circular(14),
+              border: pw.Border.all(color: PdfColors.grey300),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  "Time in Range (sample-based)",
+                  style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold),
+                ),
+                pw.SizedBox(height: 10),
+
+                // ✅ BAR = sadece layout (no painter) => kayma azalır
+                _tirBar(n.tbr, n.tir, n.tar),
+
+                pw.SizedBox(height: 10),
+                pw.Text(
+                  "TIR 70–180: ${n.tir.toStringAsFixed(1)}%   •   "
+                      "TBR <70: ${n.tbr.toStringAsFixed(1)}%   •   "
+                      "TAR >180: ${n.tar.toStringAsFixed(1)}%",
+                  style: pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+                ),
+                pw.SizedBox(height: 8),
+                pw.Text(
+                  "AGP is a standardized CGM summary. GMI is derived from mean glucose (approx.).",
+                  style: pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+                ),
+              ],
+            ),
+          ),
+
+          pw.SizedBox(height: 12),
+
+          // Raw summary
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.grey100,
+              borderRadius: pw.BorderRadius.circular(14),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  "Raw summary (sample values)",
+                  style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
+                ),
+                pw.SizedBox(height: 6),
+                pw.Text(
+                  _rawSummary(series),
+                  style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
 
@@ -165,47 +181,84 @@ class ReportPdfBuilder {
   }
 
   static pw.Widget _kpi(String title, String value) {
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
-        pw.Text(title, style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
-        pw.SizedBox(height: 4),
-        pw.Text(value, style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
-      ],
+    return pw.Expanded(
+      child: pw.Container(
+        padding: const pw.EdgeInsets.all(10),
+        decoration: pw.BoxDecoration(
+          color: PdfColors.white,
+          borderRadius: pw.BorderRadius.circular(12),
+          border: pw.Border.all(color: PdfColors.grey300),
+        ),
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Text(title, style: pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
+            pw.SizedBox(height: 6),
+            pw.Text(value, style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+          ],
+        ),
+      ),
     );
   }
 
-  static pw.Widget _bar(String label, double pct, PdfColor color) {
-    final p = pct.clamp(0, 100);
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
-        pw.Row(
-          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-          children: [
-            pw.Text(label, style: const pw.TextStyle(fontSize: 10)),
-            pw.Text("${p.toStringAsFixed(1)}%", style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
-          ],
-        ),
-        pw.SizedBox(height: 4),
-        pw.Container(
-          height: 10,
-          decoration: pw.BoxDecoration(
-            color: PdfColors.grey200,
-            borderRadius: pw.BorderRadius.circular(99),
-          ),
-          child: pw.Align(
-            alignment: pw.Alignment.centerLeft,
+  static pw.Widget _tirBar(double tbr, double tir, double tar) {
+    tbr = tbr.clamp(0.0, 100.0);
+    tir = tir.clamp(0.0, 100.0);
+    tar = tar.clamp(0.0, 100.0);
+
+    final sum = max(0.0001, tbr + tir + tar);
+    final tbrN = (tbr / sum) * 100.0;
+    final tirN = (tir / sum) * 100.0;
+    final tarN = (tar / sum) * 100.0;
+
+    int flex(double p) => max(1, (p * 10).round()); // küçük yüzdelerde bile görünür
+
+    final flexLow = flex(tbrN);
+    final flexMid = flex(tirN);
+    final flexHigh = flex(tarN);
+
+    return pw.Container(
+      height: 22,
+      decoration: pw.BoxDecoration(
+        color: PdfColors.grey200,
+        borderRadius: pw.BorderRadius.circular(12),
+        border: pw.Border.all(color: PdfColors.grey300),
+      ),
+      child: pw.Row(
+        children: [
+          pw.Expanded(
+            flex: flexLow,
             child: pw.Container(
-              width: (p / 100) * 420,
               decoration: pw.BoxDecoration(
-                color: color,
-                borderRadius: pw.BorderRadius.circular(99),
+                color: PdfColors.red600,
+                borderRadius: const pw.BorderRadius.horizontal(left: pw.Radius.circular(12)),
               ),
             ),
           ),
-        ),
-      ],
+          pw.Expanded(
+            flex: flexMid,
+            child: pw.Container(color: PdfColors.green600),
+          ),
+          pw.Expanded(
+            flex: flexHigh,
+            child: pw.Container(
+              decoration: pw.BoxDecoration(
+                color: PdfColors.orange600,
+                borderRadius: const pw.BorderRadius.horizontal(right: pw.Radius.circular(12)),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
+  }
+
+  static String _rawSummary(List<double> series) {
+    if (series.isEmpty) return "—";
+    final head = series.take(70).map((e) => e.toStringAsFixed(1)).join(", ");
+    if (series.length <= 70) return head;
+
+    final tail = series.skip(max(0, series.length - 40)).map((e) => e.toStringAsFixed(1)).join(", ");
+    return "$head … $tail";
   }
 }

@@ -16,22 +16,22 @@ class ReportPreviewScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Report Preview"),
         backgroundColor: const Color(0xFF7B3FF2),
+        elevation: 0,
+        title: const Text("Report Preview", style: TextStyle(fontWeight: FontWeight.w800)),
       ),
       body: PdfPreview(
-        build: (format) => pdfFuture,
-        canChangePageFormat: false,
+
+        maxPageWidth: 760,
+
         canChangeOrientation: false,
-        actions: [
-          PdfPreviewAction(
-            icon: const Icon(Icons.download_rounded),
-            onPressed: (context, build, pageFormat) async {
-              final bytes = await pdfFuture;
-              await Printing.sharePdf(bytes: bytes, filename: fileName);
-            },
-          ),
-        ],
+        canChangePageFormat: false,
+
+        allowPrinting: true,
+        allowSharing: true,
+        pdfFileName: fileName,
+
+        build: (_) async => await pdfFuture,
       ),
     );
   }
