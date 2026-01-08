@@ -1,13 +1,11 @@
 import 'dart:convert';
 import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../auth/login_screen.dart';
-
-// ✅ NEW: Use stored glucose samples to suggest alarm thresholds (no backend)
-import 'glucose_store.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -30,6 +28,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF4F1E8),
 
+      // ✅ AI assistant kaldırıldı
       floatingActionButton: null,
 
       body: SafeArea(
@@ -403,11 +402,9 @@ class _EventsScreenState extends State<EventsScreen> {
     final decoded = (raw == null) ? [] : (jsonDecode(raw) as List);
     _items = decoded.map((e) => _EventItem.fromJson(e as Map<String, dynamic>)).toList()
       ..sort((a, b) => b.at.compareTo(a.at));
-    if (mounted) {
-      setState(() {
-        _loading = false;
-      });
-    }
+    if (mounted) setState(() {
+      _loading = false;
+    });
   }
 
   Future<void> _save() async {
@@ -539,7 +536,9 @@ class _AddEventDialogState extends State<_AddEventDialog> {
         children: [
           DropdownButtonFormField<_EventType>(
             value: _type,
-            items: _EventType.values.map((t) => DropdownMenuItem(value: t, child: Text(t.label))).toList(),
+            items: _EventType.values
+                .map((t) => DropdownMenuItem(value: t, child: Text(t.label)))
+                .toList(),
             onChanged: (v) => setState(() => _type = v ?? _type),
             decoration: const InputDecoration(
               labelText: "Type",
@@ -956,12 +955,6 @@ class _AlarmSettingsScreenState extends State<AlarmSettingsScreen> {
   int _low = 70;
   int _high = 180;
 
-  // ✅ NEW: AI suggested thresholds (computed from recent samples)
-  bool _aiLoading = true;
-  int? _aiLow;
-  int? _aiHigh;
-  String _aiNote = "Loading AI suggestion…";
-
   @override
   void initState() {
     super.initState();
@@ -978,35 +971,6 @@ class _AlarmSettingsScreenState extends State<AlarmSettingsScreen> {
       _high = (j["high"] ?? 180) as int;
     }
     if (mounted) setState(() => _loading = false);
-
-    // ✅ NEW: compute AI suggestion after loading user settings
-    await _loadAiSuggestion();
-  }
-
-  Future<void> _loadAiSuggestion() async {
-    setState(() {
-      _aiLoading = true;
-      _aiNote = "Loading AI suggestion…";
-    });
-
-    try {
-      final res = await _AlarmAiAdvisor.suggestFromRecentSamples(days: 7);
-      if (!mounted) return;
-      setState(() {
-        _aiLow = res.low;
-        _aiHigh = res.high;
-        _aiNote = res.note;
-        _aiLoading = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _aiLow = null;
-        _aiHigh = null;
-        _aiNote = "No data found yet. Add some glucose samples first.";
-        _aiLoading = false;
-      });
-    }
   }
 
   Future<void> _save() async {
@@ -1028,92 +992,12 @@ class _AlarmSettingsScreenState extends State<AlarmSettingsScreen> {
         backgroundColor: primary,
         elevation: 0,
         title: const Text("Alarm Settings"),
-        actions: [
-          IconButton(
-            onPressed: _loadAiSuggestion,
-            icon: const Icon(Icons.auto_awesome_rounded),
-            tooltip: "Refresh AI suggestion",
-          ),
-        ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // ✅ NEW: AI suggestion card
-          _Card(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.auto_awesome_rounded, color: primary),
-                    const SizedBox(width: 10),
-                    const Expanded(
-                      child: Text("AI Suggested Thresholds",
-                          style: TextStyle(fontWeight: FontWeight.w900)),
-                    ),
-                    if (_aiLoading) const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  _aiNote,
-                  style: const TextStyle(color: Colors.black54, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _AiValuePill(
-                        label: "Low",
-                        value: _aiLow == null ? "—" : "${_aiLow} mg/dL",
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _AiValuePill(
-                        label: "High",
-                        value: _aiHigh == null ? "—" : "${_aiHigh} mg/dL",
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  height: 48,
-                  child: ElevatedButton(
-                    onPressed: (_aiLow == null || _aiHigh == null)
-                        ? null
-                        : () async {
-                      // Apply AI suggestion
-                      setState(() {
-                        _low = _aiLow!;
-                        _high = _aiHigh!;
-                      });
-                      await _save();
-                      _toast("Applied AI thresholds ✅  Low: $_low  High: $_high");
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primary,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                    ),
-                    child: const Text("Apply AI Suggestion", style: TextStyle(fontWeight: FontWeight.w900)),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  "Note: This is a heuristic suggestion from recent samples. It is not medical advice.",
-                  style: TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 12),
-
           _Card(
             child: SwitchListTile(
               value: _enabled,
@@ -1178,96 +1062,6 @@ class _AlarmSettingsScreenState extends State<AlarmSettingsScreen> {
         ],
       ),
     );
-  }
-}
-
-class _AiValuePill extends StatelessWidget {
-  final String label;
-  final String value;
-  const _AiValuePill({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF4F1E8),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w800, color: Colors.black54)),
-          const SizedBox(height: 4),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.w900)),
-        ],
-      ),
-    );
-  }
-}
-
-// ✅ NEW: AI advisor helpers (NO BACKEND)
-class _AlarmAiSuggestion {
-  final int? low;
-  final int? high;
-  final String note;
-  const _AlarmAiSuggestion({required this.low, required this.high, required this.note});
-}
-
-class _AlarmAiAdvisor {
-  /// Suggest thresholds from recent samples:
-  /// - uses last [days] days
-  /// - low = max(60, 5th percentile)  (clamped to safe UI range)
-  /// - high = min(250, 95th percentile)
-  /// If insufficient samples, returns nulls + explanatory note.
-  static Future<_AlarmAiSuggestion> suggestFromRecentSamples({int days = 7}) async {
-    final to = DateTime.now().toUtc();
-    final from = to.subtract(Duration(days: days));
-
-    final all = await GlucoseStore.getRange(from: from, to: to);
-
-    if (all.length < 10) {
-      return const _AlarmAiSuggestion(
-        low: null,
-        high: null,
-        note: "Not enough glucose samples yet (need ~10+ in last 7 days).",
-      );
-    }
-
-    final values = all.map((s) => s.mgdl).where((v) => v.isFinite && v > 20).toList()..sort();
-
-    if (values.length < 10) {
-      return const _AlarmAiSuggestion(
-        low: null,
-        high: null,
-        note: "Samples are present but not usable (invalid values).",
-      );
-    }
-
-    double percentile(List<double> v, double p) {
-      final n = v.length;
-      final idx = (p * (n - 1));
-      final i0 = idx.floor();
-      final i1 = idx.ceil();
-      if (i0 == i1) return v[i0];
-      final frac = idx - i0;
-      return v[i0] + (v[i1] - v[i0]) * frac;
-    }
-
-    final p05 = percentile(values, 0.05);
-    final p95 = percentile(values, 0.95);
-
-    // clamp to typical, conservative app limits
-    final low = p05.round().clamp(60, 120);
-    final high = p95.round().clamp(140, 250);
-
-    // guard: ensure low < high with a minimum gap
-    final fixedHigh = max(high, low + 40);
-
-    final note = "Based on last $days days (${values.length} samples). "
-        "This is a heuristic suggestion; keep clinician settings if unsure.";
-
-    return _AlarmAiSuggestion(low: low, high: fixedHigh, note: note);
   }
 }
 
@@ -1451,11 +1245,7 @@ class HelpScreen extends StatelessWidget {
           ),
           _FaqTile(
             q: "How do alarms work?",
-            a: "Alarms use your configured thresholds. This app prototype stores settings; notification wiring can be added later.",
-          ),
-          _FaqTile(
-            q: "What does AI do here?",
-            a: "AI features are on-device heuristics: it can suggest thresholds and tips from your stored data. It does not replace medical advice.",
+            a: "Alarms use your configured thresholds. This app prototype only stores settings; notification wiring can be added later.",
           ),
           _FaqTile(
             q: "How to add devices?",

@@ -142,52 +142,6 @@ class _DiaryScreenState extends State<DiaryScreen> {
 
   bool _loading = true;
 
-  // ----------------------------
-  // ✅ ON-DEVICE "AI Tips" (NO BACKEND)
-  // ----------------------------
-  final DiaryTipsEngine _tipsEngine = DiaryTipsEngine();
-  final List<DiaryTipItem> _aiTips = <DiaryTipItem>[];
-
-  void _refreshAiTips() {
-    _tipsEngine.seedIfNeeded(_aiTips);
-
-    _tipsEngine.updateTips(
-      target: _aiTips,
-      date: _selectedDate,
-      targetCalories: _targetCalories,
-      targetCarbsG: _targetCarbsG,
-      targetProteinG: _targetProteinG,
-      targetFatG: _targetFatG,
-      consumedCalories: _consumedCalories,
-      consumedCarbsG: _consumedCarbsG,
-      consumedProteinG: _consumedProteinG,
-      consumedFatG: _consumedFatG,
-      perMealCalories: _mealCaloriesMap(),
-      perMealCarbsG: _mealCarbsMap(),
-      entries: _entries,
-    );
-
-    if (_aiTips.length > 40) {
-      _aiTips.removeRange(0, _aiTips.length - 40);
-    }
-  }
-
-  Map<MealType, double> _mealCaloriesMap() {
-    final m = <MealType, double>{};
-    for (final t in MealType.values) {
-      m[t] = (_entries[t] ?? const <MealEntry>[]).fold<double>(0, (a, b) => a + b.calories);
-    }
-    return m;
-  }
-
-  Map<MealType, double> _mealCarbsMap() {
-    final m = <MealType, double>{};
-    for (final t in MealType.values) {
-      m[t] = (_entries[t] ?? const <MealEntry>[]).fold<double>(0, (a, b) => a + b.carbsG);
-    }
-    return m;
-  }
-
   @override
   void initState() {
     super.initState();
@@ -234,9 +188,6 @@ class _DiaryScreenState extends State<DiaryScreen> {
         // ignore malformed data
       }
     }
-
-    // ✅ Update AI tips after loading
-    _refreshAiTips();
 
     setState(() => _loading = false);
   }
@@ -333,18 +284,8 @@ class _DiaryScreenState extends State<DiaryScreen> {
 
   String _prettyDate(DateTime d) {
     const months = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec"
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
     ];
     return "${d.day} ${months[d.month - 1]} ${d.year}";
   }
@@ -364,8 +305,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
     // We'll estimate: carbs 45%, protein 25%, fat 30% (same as daily target).
     final calories = result.calories;
 
-    final hasAnyMacro =
-        (result.carbsG != null) || (result.proteinG != null) || (result.fatG != null);
+    final hasAnyMacro = (result.carbsG != null) || (result.proteinG != null) || (result.fatG != null);
 
     double carbsG;
     double proteinG;
@@ -394,7 +334,6 @@ class _DiaryScreenState extends State<DiaryScreen> {
 
     setState(() {
       _entries[type] = [entry, ...(_entries[type] ?? [])];
-      _refreshAiTips(); // ✅
     });
 
     await _saveCurrent();
@@ -403,7 +342,6 @@ class _DiaryScreenState extends State<DiaryScreen> {
   Future<void> _removeEntry(MealEntry e) async {
     setState(() {
       _entries[e.mealType] = (_entries[e.mealType] ?? []).where((x) => x.id != e.id).toList();
-      _refreshAiTips(); // ✅
     });
     await _saveCurrent();
   }
@@ -431,7 +369,6 @@ class _DiaryScreenState extends State<DiaryScreen> {
       for (final t in MealType.values) {
         _entries[t] = <MealEntry>[];
       }
-      _refreshAiTips(); // ✅
     });
     await _saveCurrent();
   }
@@ -511,24 +448,6 @@ class _DiaryScreenState extends State<DiaryScreen> {
 
           const SizedBox(height: 16),
 
-          // ✅ AI Tips section (always visible)
-          Row(
-            children: [
-              const Text("AI Coach Tips", style: TextStyle(fontWeight: FontWeight.w900)),
-              const Spacer(),
-              TextButton(
-                onPressed: () {
-                  setState(() => _refreshAiTips());
-                },
-                child: const Text("Refresh"),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          _DiaryTipsCardsAlwaysVisible(tips: _aiTips),
-
-          const SizedBox(height: 16),
-
           // Meals Today header (no customize, no details)
           Row(
             children: const [
@@ -570,370 +489,6 @@ class _DiaryScreenState extends State<DiaryScreen> {
       ),
       // AI assistant icon removed => no FAB
       floatingActionButton: null,
-    );
-  }
-}
-
-// ------------------------------------------------------------
-// ✅ On-device AI Tips model/engine/widgets (NO BACKEND)
-// ------------------------------------------------------------
-enum DiaryTipType { food, exercise, medicine }
-
-class DiaryTipItem {
-  final DiaryTipType type;
-  final String message;
-  final DateTime createdAt;
-
-  const DiaryTipItem({
-    required this.type,
-    required this.message,
-    required this.createdAt,
-  });
-}
-
-class DiaryTipsEngine {
-  static const Duration _minInterval = Duration(seconds: 35);
-  final Map<DiaryTipType, DateTime> _lastAt = <DiaryTipType, DateTime>{};
-
-  void seedIfNeeded(List<DiaryTipItem> target) {
-    if (target.isNotEmpty) return;
-    final now = DateTime.now();
-    target.addAll([
-      DiaryTipItem(
-        type: DiaryTipType.food,
-        message: "Log a meal and I’ll suggest how to balance carbs/protein for steadier glucose.",
-        createdAt: now,
-      ),
-      DiaryTipItem(
-        type: DiaryTipType.exercise,
-        message: "Exercise tips here are general. Pair meals with light activity if carbs are high.",
-        createdAt: now,
-      ),
-      DiaryTipItem(
-        type: DiaryTipType.medicine,
-        message: "Safety: this app never adjusts medication/doses—follow your clinician plan.",
-        createdAt: now,
-      ),
-    ]);
-  }
-
-  void updateTips({
-    required List<DiaryTipItem> target,
-    required DateTime date,
-    required double targetCalories,
-    required double targetCarbsG,
-    required double targetProteinG,
-    required double targetFatG,
-    required double consumedCalories,
-    required double consumedCarbsG,
-    required double consumedProteinG,
-    required double consumedFatG,
-    required Map<MealType, double> perMealCalories,
-    required Map<MealType, double> perMealCarbsG,
-    required Map<MealType, List<MealEntry>> entries,
-  }) {
-    final now = DateTime.now();
-    final isToday = _sameDay(date, DateTime.now());
-
-    final remainingCalories = max(0.0, targetCalories - consumedCalories);
-    final remainingCarbs = max(0.0, targetCarbsG - consumedCarbsG);
-    final remainingProtein = max(0.0, targetProteinG - consumedProteinG);
-    final remainingFat = max(0.0, targetFatG - consumedFatG);
-
-    // Detect “spiky” carb meal: any single meal carbs > ~45g
-    double maxMealCarbs = 0.0;
-    MealType? maxCarbMeal;
-    for (final t in MealType.values) {
-      final c = perMealCarbsG[t] ?? 0.0;
-      if (c > maxMealCarbs) {
-        maxMealCarbs = c;
-        maxCarbMeal = t;
-      }
-    }
-
-    // meals count
-    int mealCount = 0;
-    for (final t in MealType.values) {
-      mealCount += (entries[t] ?? const <MealEntry>[]).length;
-    }
-
-    // ----- FOOD TIP
-    final food = _foodTip(
-      isToday: isToday,
-      mealCount: mealCount,
-      consumedCalories: consumedCalories,
-      targetCalories: targetCalories,
-      consumedCarbsG: consumedCarbsG,
-      targetCarbsG: targetCarbsG,
-      remainingCalories: remainingCalories,
-      remainingCarbs: remainingCarbs,
-      remainingProtein: remainingProtein,
-      remainingFat: remainingFat,
-      maxMealCarbs: maxMealCarbs,
-      maxCarbMeal: maxCarbMeal,
-    );
-    _maybeAdd(target, DiaryTipType.food, now, food);
-
-    // ----- EXERCISE TIP (diary-aware, still general)
-    final exercise = _exerciseTip(
-      isToday: isToday,
-      consumedCarbsG: consumedCarbsG,
-      targetCarbsG: targetCarbsG,
-      maxMealCarbs: maxMealCarbs,
-      maxCarbMeal: maxCarbMeal,
-    );
-    _maybeAdd(target, DiaryTipType.exercise, now, exercise);
-
-    // ----- MEDICINE TIP (always safety-first, non-prescriptive)
-    final medicine = _medicineTip(isToday: isToday, maxMealCarbs: maxMealCarbs);
-    _maybeAdd(target, DiaryTipType.medicine, now, medicine);
-  }
-
-  bool _sameDay(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
-
-  void _maybeAdd(
-      List<DiaryTipItem> target,
-      DiaryTipType type,
-      DateTime now,
-      String msg,
-      ) {
-    final last = _lastAt[type];
-    if (last != null && now.difference(last) < _minInterval) return;
-
-    final latestSameType = target.where((t) => t.type == type).toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-
-    if (latestSameType.isNotEmpty && latestSameType.first.message == msg) return;
-
-    target.add(DiaryTipItem(type: type, message: msg, createdAt: now));
-    _lastAt[type] = now;
-  }
-
-  String _foodTip({
-    required bool isToday,
-    required int mealCount,
-    required double consumedCalories,
-    required double targetCalories,
-    required double consumedCarbsG,
-    required double targetCarbsG,
-    required double remainingCalories,
-    required double remainingCarbs,
-    required double remainingProtein,
-    required double remainingFat,
-    required double maxMealCarbs,
-    required MealType? maxCarbMeal,
-  }) {
-    if (mealCount == 0) {
-      return isToday
-          ? "No meals logged yet: start with protein + fiber (eggs/yoğurt + oats/veg) to avoid a carb spike."
-          : "No meals logged on this day.";
-    }
-
-    final calProgress = (consumedCalories / max(1.0, targetCalories)).clamp(0.0, 2.0);
-    final carbProgress = (consumedCarbsG / max(1.0, targetCarbsG)).clamp(0.0, 2.0);
-
-    if (carbProgress >= 1.0 && remainingCarbs <= 10) {
-      return "Carbs are basically maxed: for the rest of the day, keep carbs minimal and focus on protein + vegetables.";
-    }
-
-    if (maxMealCarbs >= 55 && maxCarbMeal != null) {
-      return "${maxCarbMeal.title} looks carb-heavy (~${maxMealCarbs.toStringAsFixed(0)}g). Next meal: pair carbs with protein/fiber (chicken + salad + small carb portion).";
-    }
-
-    if (calProgress < 0.6 && carbProgress > 0.75) {
-      return "Calories are still moderate but carbs are high: shift next meal toward protein/fat (fish/eggs/nuts) and add veggies.";
-    }
-
-    if (remainingCalories < 250) {
-      return "You’re close to your calorie target: choose a light option (yogurt + nuts / salad) rather than a sweet snack.";
-    }
-
-    // Balanced generic
-    return "Good logging. Aim to spread carbs across meals and add fiber (vegetables/whole grains) to stabilize glucose.";
-  }
-
-  String _exerciseTip({
-    required bool isToday,
-    required double consumedCarbsG,
-    required double targetCarbsG,
-    required double maxMealCarbs,
-    required MealType? maxCarbMeal,
-  }) {
-    if (!isToday) {
-      return "Exercise tip for the next day: light walking after meals can help reduce post-meal glucose spikes.";
-    }
-
-    final carbProgress = (consumedCarbsG / max(1.0, targetCarbsG)).clamp(0.0, 2.0);
-
-    if (maxMealCarbs >= 55 && maxCarbMeal != null) {
-      return "After a carb-heavy ${maxCarbMeal.title}, a 10–20 min easy walk is a simple way to support steadier glucose.";
-    }
-    if (carbProgress >= 0.9) {
-      return "Carbs are high today: consider a gentle walk after your next meal (10–15 min).";
-    }
-    return "General: short walks after meals can help, but keep intensity comfortable and consistent.";
-  }
-
-  String _medicineTip({required bool isToday, required double maxMealCarbs}) {
-    if (!isToday) {
-      return "Reminder: this app does not change medication. Always follow your clinician’s plan.";
-    }
-    if (maxMealCarbs >= 55) {
-      return "If you use glucose-lowering medication, be mindful after carb-heavy meals. Follow your care plan (no dose changes here).";
-    }
-    return "Safety reminder: medication guidance here is informational only—follow your clinician plan.";
-  }
-}
-
-class _DiaryTipsCardsAlwaysVisible extends StatelessWidget {
-  final List<DiaryTipItem> tips;
-  const _DiaryTipsCardsAlwaysVisible({required this.tips});
-
-  String _latestFor(DiaryTipType type) {
-    final filtered = tips.where((t) => t.type == type).toList();
-    if (filtered.isEmpty) return "Waiting for AI suggestions…";
-    filtered.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    return filtered.first.message;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, c) {
-        final w = c.maxWidth;
-        final isVeryNarrow = w < 360;
-
-        if (isVeryNarrow) {
-          return Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              SizedBox(
-                width: (w - 12) / 2,
-                child: _TipCard(
-                  title: "Foods",
-                  message: _latestFor(DiaryTipType.food),
-                  color: const Color(0xFF1F5EA8),
-                  icon: Icons.fastfood_rounded,
-                ),
-              ),
-              SizedBox(
-                width: (w - 12) / 2,
-                child: _TipCard(
-                  title: "Exercises",
-                  message: _latestFor(DiaryTipType.exercise),
-                  color: const Color(0xFFCDA1FF),
-                  icon: Icons.directions_walk_rounded,
-                ),
-              ),
-              SizedBox(
-                width: (w - 12) / 2,
-                child: _TipCard(
-                  title: "Medicine",
-                  message: _latestFor(DiaryTipType.medicine),
-                  color: const Color(0xFFFFC45C),
-                  icon: Icons.medication_rounded,
-                ),
-              ),
-            ],
-          );
-        }
-
-        return Row(
-          children: [
-            Expanded(
-              child: _TipCard(
-                title: "Foods",
-                message: _latestFor(DiaryTipType.food),
-                color: const Color(0xFF1F5EA8),
-                icon: Icons.fastfood_rounded,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _TipCard(
-                title: "Exercises",
-                message: _latestFor(DiaryTipType.exercise),
-                color: const Color(0xFFCDA1FF),
-                icon: Icons.directions_walk_rounded,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _TipCard(
-                title: "Medicine",
-                message: _latestFor(DiaryTipType.medicine),
-                color: const Color(0xFFFFC45C),
-                icon: Icons.medication_rounded,
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _TipCard extends StatelessWidget {
-  final String title;
-  final String message;
-  final Color color;
-  final IconData icon;
-
-  const _TipCard({
-    required this.title,
-    required this.message,
-    required this.color,
-    required this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 160,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.25),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Icon(icon, color: Colors.white),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            title,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w900,
-              fontSize: 14,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            message,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.95),
-              fontWeight: FontWeight.w600,
-              fontSize: 11,
-              height: 1.25,
-            ),
-            maxLines: 4,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ),
     );
   }
 }
@@ -1032,6 +587,7 @@ class _DietTextSide extends StatelessWidget {
       children: [
         const Text("Diet Program", style: TextStyle(fontWeight: FontWeight.w900)),
         const SizedBox(height: 10),
+
         Row(
           children: [
             Expanded(
@@ -1049,6 +605,7 @@ class _DietTextSide extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
+
         Row(
           children: [
             Expanded(
@@ -1073,6 +630,7 @@ class _DietTextSide extends StatelessWidget {
             ),
           ],
         ),
+
         const SizedBox(height: 10),
         Text(
           "Tip: To keep glucose stable, distribute carbs across meals and avoid large spikes.",
@@ -1100,11 +658,7 @@ class _Kpi extends StatelessWidget {
       children: [
         Text(
           label,
-          style: TextStyle(
-            color: Colors.black.withOpacity(0.55),
-            fontWeight: FontWeight.w700,
-            fontSize: 12,
-          ),
+          style: TextStyle(color: Colors.black.withOpacity(0.55), fontWeight: FontWeight.w700, fontSize: 12),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
@@ -1132,11 +686,7 @@ class _MacroMini extends StatelessWidget {
       children: [
         Text(
           label,
-          style: TextStyle(
-            color: Colors.black.withOpacity(0.55),
-            fontWeight: FontWeight.w700,
-            fontSize: 11,
-          ),
+          style: TextStyle(color: Colors.black.withOpacity(0.55), fontWeight: FontWeight.w700, fontSize: 11),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
@@ -1235,8 +785,7 @@ class _RingPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _RingPainter oldDelegate) =>
-      oldDelegate.progress != progress;
+  bool shouldRepaint(covariant _RingPainter oldDelegate) => oldDelegate.progress != progress;
 }
 
 // ------------------------------------------------------------
@@ -1292,11 +841,7 @@ class _MealCard extends StatelessWidget {
                   children: [
                     Text(
                       type.title,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 14,
-                      ),
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -1332,7 +877,9 @@ class _MealCard extends StatelessWidget {
               )
             ],
           ),
+
           const SizedBox(height: 12),
+
           if (entries.isEmpty)
             Container(
               width: double.infinity,
@@ -1402,11 +949,7 @@ class _MealEntryTile extends StatelessWidget {
                       "C ${entry.carbsG.toStringAsFixed(0)}g  "
                       "P ${entry.proteinG.toStringAsFixed(0)}g  "
                       "F ${entry.fatG.toStringAsFixed(0)}g",
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.92),
-                    fontWeight: FontWeight.w700,
-                    fontSize: 11,
-                  ),
+                  style: TextStyle(color: Colors.white.withOpacity(0.92), fontWeight: FontWeight.w700, fontSize: 11),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -1492,8 +1035,7 @@ class _AddMealDialogState extends State<_AddMealDialog> {
                   labelText: "What did you eat?",
                   hintText: "e.g., Oatmeal + yogurt",
                 ),
-                validator: (v) =>
-                (v == null || v.trim().isEmpty) ? "Please enter a name" : null,
+                validator: (v) => (v == null || v.trim().isEmpty) ? "Please enter a name" : null,
               ),
               const SizedBox(height: 10),
               TextFormField(
@@ -1553,11 +1095,7 @@ class _AddMealDialogState extends State<_AddMealDialog> {
               const SizedBox(height: 10),
               Text(
                 "If you leave macros empty, we estimate them with a diabetic-friendly split.",
-                style: TextStyle(
-                  fontSize: 11,
-                  color: Colors.black.withOpacity(0.6),
-                  fontWeight: FontWeight.w600,
-                ),
+                style: TextStyle(fontSize: 11, color: Colors.black.withOpacity(0.6), fontWeight: FontWeight.w600),
               )
             ],
           ),

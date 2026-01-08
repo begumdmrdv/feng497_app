@@ -1,13 +1,9 @@
-import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'register_screen.dart';
 import '../home/home_shell.dart'; // ✅ if your path differs, fix this import
-
-// ✅ NEW: demo glucose data (AI-tagged) so app works without backend
-import '../home/glucose_store.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -125,41 +121,6 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  // ✅ NEW: Seed demo AI glucose samples so Report + PDF show "AI Insights"
-  Future<void> _seedDemoData() async {
-    if (_loading) return;
-
-    setState(() => _loading = true);
-    try {
-      await GlucoseStore.clearAll();
-
-      final now = DateTime.now().toUtc();
-      final rng = Random(42);
-
-      // 14 days hourly samples
-      for (int i = 0; i < 14 * 24; i++) {
-        final ts = now.subtract(Duration(hours: i));
-
-        // smooth-ish daily pattern + noise
-        final base = 110 + 35 * sin(i / 6);
-        final noise = rng.nextDouble() * 18 - 9;
-        final val = (base + noise).clamp(55, 260).toDouble();
-
-        await GlucoseStore.addSample(
-          mgdl: val,
-          ts: ts,
-          source: GlucoseSource.ai,
-        );
-      }
-
-      _toast("Demo glucose data created ✅ (AI-tagged). Go to Report tab.");
-    } catch (e) {
-      _toast("Could not create demo data: $e");
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     const primary = Color(0xFF7B3FF2);
@@ -178,6 +139,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
           ),
+
           Positioned.fill(
             child: IgnorePointer(
               child: BackdropFilter(
@@ -186,6 +148,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
           ),
+
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
@@ -194,9 +157,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   constraints: const BoxConstraints(maxWidth: 420),
                   child: Column(
                     children: [
-                      // =========================
-                      // Logo card
-                      // =========================
+                      // ✅ UPDATED: BIGGER, PREMIUM LOGO HEADER
                       Container(
                         padding: const EdgeInsets.all(18),
                         decoration: BoxDecoration(
@@ -213,48 +174,56 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         child: Column(
                           children: [
-                            // ✅ UPDATED: badge area is FULL logo (no padding)
+                            // Logo badge (bigger + layered shadows)
                             Container(
-                              width: 160,
-                              height: 160,
+                              width: 150,
+                              height: 150,
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(36),
                                 gradient: LinearGradient(
                                   begin: Alignment.topLeft,
                                   end: Alignment.bottomRight,
                                   colors: [
-                                    Colors.white.withOpacity(0.97),
-                                    Colors.white.withOpacity(0.82),
+                                    Colors.white.withOpacity(0.95),
+                                    Colors.white.withOpacity(0.78),
                                   ],
                                 ),
                                 boxShadow: [
                                   BoxShadow(
-                                    blurRadius: 28,
+                                    blurRadius: 26,
                                     offset: const Offset(0, 18),
                                     color: Colors.black.withOpacity(0.22),
                                   ),
                                   BoxShadow(
                                     blurRadius: 10,
-                                    offset: const Offset(0, 3),
-                                    color: Colors.white.withOpacity(0.20),
+                                    offset: const Offset(0, 4),
+                                    color: Colors.white.withOpacity(0.25),
                                   ),
                                 ],
                               ),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(36),
-                                child: Image.asset(
-                                  'assets/images/logo.png',
-                                  fit: BoxFit.cover, // ✅ fills the entire square
-                                  filterQuality: FilterQuality.high,
-                                  errorBuilder: (_, __, ___) {
-                                    return const Center(
-                                      child: Icon(Icons.broken_image_rounded, size: 48),
-                                    );
-                                  },
+                              child: Center(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(28),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(14),
+                                    child: Image.asset(
+                                      'assets/images/logo.png',
+                                      fit: BoxFit.contain,
+                                      filterQuality: FilterQuality.high,
+                                      errorBuilder: (_, __, ___) {
+                                        return const Icon(
+                                          Icons.broken_image_rounded,
+                                          size: 44,
+                                        );
+                                      },
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
+
                             const SizedBox(height: 14),
+
                             const Text(
                               "DermaGly",
                               style: TextStyle(
@@ -264,7 +233,9 @@ class _LoginScreenState extends State<LoginScreen> {
                                 letterSpacing: 0.3,
                               ),
                             ),
+
                             const SizedBox(height: 6),
+
                             Text(
                               "Sudor Glyco Sense",
                               style: TextStyle(
@@ -279,9 +250,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 18),
 
-                      // =========================
                       // Form card
-                      // =========================
                       Container(
                         padding: const EdgeInsets.all(18),
                         decoration: BoxDecoration(
@@ -298,156 +267,104 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         child: Column(
                           children: [
-                            _Field(
-                              controller: _emailC,
-                              hint: "Email",
-                              icon: Icons.person_outline_rounded,
-                              keyboardType: TextInputType.emailAddress,
-                              enabled: !_loading,
+                          _Field(
+                          controller: _emailC,
+                          hint: "Email",
+                          icon: Icons.person_outline_rounded,
+                          keyboardType: TextInputType.emailAddress,
+                          enabled: !_loading,
+                        ),
+                        const SizedBox(height: 12),
+                        _Field(
+                          controller: _passC,
+                          hint: "Password",
+                          icon: Icons.lock_outline_rounded,
+                          obscure: _hidePass,
+                          enabled: !_loading,
+                          trailing: IconButton(
+                            onPressed: _loading ? null : () => setState(() => _hidePass = !_hidePass),
+                            icon: Icon(
+                              _hidePass ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                              color: Colors.white.withOpacity(0.90),
                             ),
-                            const SizedBox(height: 12),
-                            _Field(
-                              controller: _passC,
-                              hint: "Password",
-                              icon: Icons.lock_outline_rounded,
-                              obscure: _hidePass,
-                              enabled: !_loading,
-                              trailing: IconButton(
-                                onPressed: _loading ? null : () => setState(() => _hidePass = !_hidePass),
-                                icon: Icon(
-                                  _hidePass ? Icons.visibility_off_rounded : Icons.visibility_rounded,
-                                  color: Colors.white.withOpacity(0.90),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: TextButton(
-                                onPressed: _loading ? null : _forgotPassword,
-                                child: const Text(
-                                  "Forgot password?",
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            SizedBox(
-                              width: double.infinity,
-                              height: 52,
-                              child: ElevatedButton(
-                                onPressed: _loading ? null : _login,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: primary.withOpacity(0.95),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(18),
-                                  ),
-                                  elevation: 0,
-                                ),
-                                child: _loading
-                                    ? const SizedBox(
-                                  width: 22,
-                                  height: 22,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                                    : const Text(
-                                  "Log In",
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w900,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  "Don't have an account? ",
-                                  style: TextStyle(
-                                    color: Colors.white.withOpacity(0.88),
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                GestureDetector(
-                                  onTap: _goRegister,
-                                  child: const Text(
-                                    "Sign Up",
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w900,
-                                      decoration: TextDecoration.underline,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
 
-                            // ✅ NEW: Dev tools (no backend). Helps demo AI features fast.
-                            const SizedBox(height: 16),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.14),
-                                borderRadius: BorderRadius.circular(18),
-                                border: Border.all(color: Colors.white.withOpacity(0.20)),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: _loading ? null : _forgotPassword,
+                            child: const Text(
+                              "Forgot password?",
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
                               ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      Icon(Icons.auto_awesome_rounded, color: Colors.white.withOpacity(0.95)),
-                                      const SizedBox(width: 8),
-                                      const Expanded(
-                                        child: Text(
-                                          "Developer Tools",
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.w900,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    "Create demo AI glucose samples so Report + PDF works without backend.",
-                                    style: TextStyle(
-                                      color: Colors.white.withOpacity(0.85),
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 10),
-                                  SizedBox(
-                                    width: double.infinity,
-                                    height: 46,
-                                    child: OutlinedButton.icon(
-                                      onPressed: _loading ? null : _seedDemoData,
-                                      icon: const Icon(Icons.bolt_rounded, color: Colors.white),
-                                      label: const Text(
-                                        "Generate Demo AI Data",
-                                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
-                                      ),
-                                      style: OutlinedButton.styleFrom(
-                                        side: BorderSide(color: Colors.white.withOpacity(0.55)),
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                      ),
-                                    ),
-                                  ),
-                                ],
+                            ),
+                          ),
+                        ),
+
+                        const SizedBox(height: 6),
+
+                        SizedBox(
+                          width: double.infinity,
+                          height: 52,
+                          child: ElevatedButton(
+                            onPressed: _loading ? null : _login,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: primary.withOpacity(0.95),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(18),
+                              ),
+                              elevation: 0,
+                            ),
+                            child: _loading
+                                ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                                : const Text(
+                              "Log In",
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+
+                        const SizedBox(height: 12),
+
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              "Don't have an account? ",
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.88),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            GestureDetector(
+                              onTap: _goRegister,
+                              child: const Text(
+                                "Sign Up",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w900,
+                                  decoration: TextDecoration.underline,
+                                ),
                               ),
                             ),
                           ],
                         ),
+                            ],
                       ),
+                    ),
+
 
                       const SizedBox(height: 18),
                     ],

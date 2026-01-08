@@ -6,9 +6,6 @@ import 'activity_screen.dart';
 import 'report_screen.dart';
 import 'profile_screen.dart';
 
-// ✅ NEW: Keep storage lean when app runs
-import 'glucose_store.dart';
-
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -28,29 +25,9 @@ class _HomeShellState extends State<HomeShell> {
   ];
 
   @override
-  void initState() {
-    super.initState();
-
-    // ✅ NEW: prune old glucose samples once at app start (no backend needed)
-    _pruneGlucoseSamples();
-  }
-
-  Future<void> _pruneGlucoseSamples() async {
-    try {
-      await GlucoseStore.prune(days: 30);
-    } catch (_) {
-      // Don't crash if storage is corrupted or missing
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // ✅ NEW: preserves each tab's state (scroll position, local UI state, etc.)
-      body: IndexedStack(
-        index: _index,
-        children: _pages,
-      ),
+      body: _pages[_index],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _index,
         onTap: (i) => setState(() => _index = i),
