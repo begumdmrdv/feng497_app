@@ -1,9 +1,13 @@
+import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'register_screen.dart';
 import '../home/home_shell.dart'; // ✅ if your path differs, fix this import
+
+// ✅ NEW: demo glucose data (AI-tagged) so app works without backend
+import '../home/glucose_store.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -121,6 +125,41 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  // ✅ NEW: Seed demo AI glucose samples so Report + PDF show "AI Insights"
+  Future<void> _seedDemoData() async {
+    if (_loading) return;
+
+    setState(() => _loading = true);
+    try {
+      await GlucoseStore.clearAll();
+
+      final now = DateTime.now().toUtc();
+      final rng = Random(42);
+
+      // 14 days hourly samples
+      for (int i = 0; i < 14 * 24; i++) {
+        final ts = now.subtract(Duration(hours: i));
+
+        // smooth-ish daily pattern + noise
+        final base = 110 + 35 * sin(i / 6);
+        final noise = rng.nextDouble() * 18 - 9;
+        final val = (base + noise).clamp(55, 260).toDouble();
+
+        await GlucoseStore.addSample(
+          mgdl: val,
+          ts: ts,
+          source: GlucoseSource.ai,
+        );
+      }
+
+      _toast("Demo glucose data created ✅ (AI-tagged). Go to Report tab.");
+    } catch (e) {
+      _toast("Could not create demo data: $e");
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     const primary = Color(0xFF7B3FF2);
@@ -215,9 +254,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                 ),
                               ),
                             ),
-
                             const SizedBox(height: 14),
-
                             const Text(
                               "DermaGly",
                               style: TextStyle(
@@ -349,6 +386,64 @@ class _LoginScreenState extends State<LoginScreen> {
                                   ),
                                 ),
                               ],
+                            ),
+
+                            // ✅ NEW: Dev tools (no backend). Helps demo AI features fast.
+                            const SizedBox(height: 16),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.14),
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(color: Colors.white.withOpacity(0.20)),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.auto_awesome_rounded, color: Colors.white.withOpacity(0.95)),
+                                      const SizedBox(width: 8),
+                                      const Expanded(
+                                        child: Text(
+                                          "Developer Tools",
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    "Create demo AI glucose samples so Report + PDF works without backend.",
+                                    style: TextStyle(
+                                      color: Colors.white.withOpacity(0.85),
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    height: 46,
+                                    child: OutlinedButton.icon(
+                                      onPressed: _loading ? null : _seedDemoData,
+                                      icon: const Icon(Icons.bolt_rounded, color: Colors.white),
+                                      label: const Text(
+                                        "Generate Demo AI Data",
+                                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
+                                      ),
+                                      style: OutlinedButton.styleFrom(
+                                        side: BorderSide(color: Colors.white.withOpacity(0.55)),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ],
                         ),

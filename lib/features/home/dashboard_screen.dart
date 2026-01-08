@@ -1,11 +1,15 @@
-import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
+import 'dart:convert';
+import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // ✅ haptic + sound
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // ✅ threshold settings
+
+import 'package:feng497_app/features/ai/glucose_predictor.dart';
+import 'package:feng497_app/features/ai/calibration_store.dart';
 
 class DashboardScreen extends StatefulWidget {
   final List<double> liveSeries;
@@ -25,155 +29,445 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-enum _WsState { connecting, open, closed, error }
-
 class _DashboardScreenState extends State<DashboardScreen> {
   // ----------------------------
   // ✅ WEBSOCKET LIVE DATA
   // ----------------------------
   WebSocketChannel? _channel;
-  StreamSubscription? _wsSub;
-  Timer? _reconnectTimer;
+  final List<double> _wsLiveSeries = <double>[];
+  final List<DateTime> _wsLiveTs = <DateTime>[]; // ✅ timestamps for rapid-change
+  double? _wsLiveCurrentValue;
 
-  _WsState _wsState = _WsState.closed;
+  // ✅ WS connection status (for UI)
+  bool _wsConnected = false;
   String? _wsLastError;
 
-  double? _wsGlucose;
-  String? _wsStatus;
-  DateTime? _wsTimestamp;
+  // true ise live data WS'ten gelir
+  final bool _useWebSocketLive = true;
 
-  // Web / Android emulator host difference
-  Uri get _wsUri {
-    final host = kIsWeb ? 'localhost' : '10.0.2.2';
-    // ✅ Burayı backend’ine göre tek yerden değiştir:
-    return Uri.parse('ws://$host:8000/ws/stream');
+  // ✅ Eğer WS gelmiyorsa GEÇİCİ simulator çalışsın
+  final bool _enableLocalSimulatorWhenNoWs = true;
+  Timer? _simTimer;
+  bool _receivedAnyWs = false;
+
+  // ✅ WS URI
+  // Emulator connect URI (do not change unless you know what you're doing)
+  final Uri _wsUriConnect = Uri.parse('ws://10.0.2.2:8000/ws/stream');
+  // UI display URI (screenshot style). You can set this to _wsUriConnect.toString() if you want.
+  final String _wsUriDisplay = 'ws://localhost:8000/ws/stream';
+
+  // ----------------------------
+  // ✅ ON-DEVICE AI (NO BACKEND)
+  // ----------------------------
+  final GlucosePredictor _predictor = GlucosePredictor(windowSize: 12);
+  final CalibrationStore _calibStore = CalibrationStore();
+  CalibrationParams _calib = CalibrationParams.defaultParams;
+
+  final List<SweatReading> _aiBuffer = <SweatReading>[];
+  final List<double> _aiSeries = <double>[];
+
+  double? _aiCurrentValue;
+  Trend _aiTrend = Trend.flat;
+  double _aiConfidence = 0.0;
+  RiskLevel _aiRisk = RiskLevel.low;
+
+  // Live kartında WS mi AI mı gösterilsin?
+  final bool _showAiOnLiveCard = true;
+
+  // ----------------------------
+  // ✅ ON-DEVICE AI TIPS (NO BACKEND)
+  // ----------------------------
+  final AITipsEngine _tipsEngine = AITipsEngine();
+  final List<TipItem> _aiTips = <TipItem>[]; // <- on-device üretilen tips burada birikir
+
+  List<TipItem> _mergedTipsForUI() {
+    // Backend + On-device birleştir (UI her tip için en güncelini gösteriyor)
+    if (widget.tips.isEmpty) return List<TipItem>.from(_aiTips);
+    return <TipItem>[...widget.tips, ..._aiTips];
   }
 
-  void _setWsState(_WsState s, {String? err}) {
-    if (!mounted) return;
-    setState(() {
-      _wsState = s;
-      _wsLastError = err;
-    });
-  }
+  // ----------------------------
+  // ✅ ALERT SETTINGS (NO BACKEND)
+  // ----------------------------
+  final AlertSettingsStore _alertStore = AlertSettingsStore();
+  AlertSettings _alertSettings = AlertSettings.defaults();
 
-  void _connectWs({bool manual = false}) {
-    // önce eski bağlantıyı kapat
-    _cleanupWs();
+  // Debounce: same alert repeated too often = annoying
+  DateTime? _lastAlertAt;
+  AlertType? _lastAlertType;
 
-    final uri = _wsUri;
-    debugPrint("WS connecting to: $uri");
-    _setWsState(_WsState.connecting);
+  // Last computed rapid change rate
+  double? _lastRateMgDlPerMin;
 
-    try {
-      _channel = WebSocketChannel.connect(uri);
-
-      _wsSub = _channel!.stream.listen(
-            (event) {
-          // Bağlantı aktif mesaj alıyorsa OPEN say
-          if (_wsState != _WsState.open) _setWsState(_WsState.open);
-
-          debugPrint("WS raw: $event");
-          _handleWsEvent(event);
-        },
-        onError: (e) {
-          debugPrint("WS error: $e");
-          _setWsState(_WsState.error, err: e.toString());
-          _scheduleReconnect();
-        },
-        onDone: () {
-          debugPrint("WS closed");
-          _setWsState(_WsState.closed);
-          _scheduleReconnect();
-        },
-        cancelOnError: true,
-      );
-    } catch (e) {
-      debugPrint("WS connect failed: $e");
-      _setWsState(_WsState.error, err: e.toString());
-      _scheduleReconnect();
+  String _riskText(RiskLevel r) {
+    switch (r) {
+      case RiskLevel.low:
+        return "Low risk";
+      case RiskLevel.medium:
+        return "Medium risk";
+      case RiskLevel.high:
+        return "High risk";
     }
   }
 
-  void _handleWsEvent(dynamic event) {
+  // ----------------------------------------
+  // ✅ Tek noktadan live değer işleme:
+  // WS’den de gelse, simulator’dan da gelse buradan geçsin
+  // ----------------------------------------
+  void _handleIncomingGlucose(double g) {
+    final now = DateTime.now();
+
+    // 1) raw WS series (fallback için tut)
+    _wsLiveCurrentValue = g;
+    _wsLiveSeries.add(g);
+    _wsLiveTs.add(now);
+
+    if (_wsLiveSeries.length > 60) _wsLiveSeries.removeAt(0);
+    if (_wsLiveTs.length > 60) _wsLiveTs.removeAt(0);
+
+    // 2) On-device AI için "SweatReading" üret
+    // Şimdilik gerçek sweat feature’lar yoksa placeholder kalsın.
+    final r = SweatReading(
+      ts: now,
+      sweatRate: 0.0,
+      temperature: 0.0,
+      ph: 0.0,
+      current: g, // geçici: glucose’u current’a koyuyoruz
+    );
+
+    _aiBuffer.add(r);
+    if (_aiBuffer.length > 200) _aiBuffer.removeAt(0);
+
+    // 3) AI prediction
+    final pred = _predictor.predict(_aiBuffer, calibration: _calib);
+    if (pred != null) {
+      _aiCurrentValue = pred.mgDl;
+      _aiTrend = pred.trend;
+      _aiConfidence = pred.confidence;
+      _aiRisk = pred.risk30m;
+
+      _aiSeries.add(_aiCurrentValue!);
+      if (_aiSeries.length > 60) _aiSeries.removeAt(0);
+
+      // ✅ On-device AI tips (pred varsa daha iyi)
+      _tipsEngine.updateTips(
+        target: _aiTips,
+        mgDl: _aiCurrentValue!,
+        trend: _aiTrend,
+        risk: _aiRisk,
+        confidence: _aiConfidence,
+        now: now,
+      );
+    } else {
+      // yeterli veri yoksa chart boş kalmasın
+      _aiSeries.add(g);
+      if (_aiSeries.length > 60) _aiSeries.removeAt(0);
+
+      // ✅ pred yoksa bile basit tips üretsin (confidence düşük)
+      _tipsEngine.updateTips(
+        target: _aiTips,
+        mgDl: g,
+        trend: Trend.flat,
+        risk: RiskLevel.low,
+        confidence: 0.35,
+        now: now,
+      );
+    }
+
+    // 4) ✅ ALERTS (threshold + rapid change + night mode)
+    _maybeTriggerAlerts();
+  }
+
+  // ----------------------------------------
+  // ✅ WS bağlan
+  // Backend payload beklenen format:
+  // {"type":"reading","data":{"glucose":111}}
+  // ----------------------------------------
+  void _connectWs() {
+    debugPrint("WS connecting to: $_wsUriConnect");
+
     try {
-      final obj = jsonDecode(event.toString());
-      if (obj is! Map) return;
+      _channel?.sink.close();
+    } catch (_) {}
 
-      // 2 formatı da destekle:
-      // 1) {"type":"reading","data":{...}}
-      // 2) {"glucose":...,"status":...,"timestamp":...}
-      Map data;
-      if (obj.containsKey("data") && obj["data"] is Map) {
-        data = obj["data"] as Map;
-      } else {
-        data = obj;
+    // Reset UI state
+    if (mounted) {
+      setState(() {
+        _wsConnected = false;
+        _wsLastError = null;
+      });
+    }
+
+    _channel = WebSocketChannel.connect(_wsUriConnect);
+
+    _channel!.stream.listen((event) {
+      debugPrint("WS raw: $event");
+      _receivedAnyWs = true;
+
+      // WS geldiyse simulator’ı kapat
+      _stopSimulator();
+
+      try {
+        final obj = jsonDecode(event);
+
+        if (obj is Map && obj["type"] == "reading") {
+          final d = obj["data"];
+          if (d is Map && d["glucose"] != null) {
+            final g = (d["glucose"] as num).toDouble();
+            if (!mounted) return;
+            setState(() {
+              _wsConnected = true;
+              _wsLastError = null;
+              _handleIncomingGlucose(g);
+            });
+          }
+        }
+      } catch (e) {
+        debugPrint("WS parse error: $e");
       }
-
-      final gRaw = data["glucose"];
-      final sRaw = data["status"];
-      final tRaw = data["timestamp"];
-
-      if (gRaw is! num) return;
-
-      final g = gRaw.toDouble();
-      final status = (sRaw ?? "UNKNOWN").toString();
-
-      DateTime ts;
-      if (tRaw != null) {
-        ts = DateTime.tryParse(tRaw.toString())?.toLocal() ?? DateTime.now();
-      } else {
-        ts = DateTime.now();
+    }, onError: (e) {
+      debugPrint("WS error: $e");
+      if (mounted) {
+        setState(() {
+          _wsConnected = false;
+          _wsLastError = "WS error: $e";
+        });
       }
+      // hata olursa simulator devreye girebilir
+      _startSimulatorIfNeeded();
+    }, onDone: () {
+      debugPrint("WS closed");
+      if (mounted) {
+        setState(() {
+          _wsConnected = false;
+          _wsLastError = "WS closed";
+        });
+      }
+      _startSimulatorIfNeeded();
+    });
+  }
+
+  // ----------------------------------------
+  // ✅ Local simulator (backend yokken geçici)
+  // ----------------------------------------
+  void _startSimulatorIfNeeded() {
+    if (!_enableLocalSimulatorWhenNoWs) return;
+    if (_receivedAnyWs) return; // WS bir kez bile geldiyse sim başlatma
+    if (_simTimer != null) return;
+
+    debugPrint("Simulator started (no WS data).");
+
+    final rng = Random();
+    double v = 110.0;
+
+    _simTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      // küçük drift + gürültü
+      v += (rng.nextDouble() * 2 - 1) * 2.0;
+      v += sin(DateTime.now().millisecondsSinceEpoch / 5000.0) * 1.0;
+      v = v.clamp(70.0, 220.0);
 
       if (!mounted) return;
       setState(() {
-        _wsGlucose = g;
-        _wsStatus = status;
-        _wsTimestamp = ts;
+        // simulator çalışıyorsa ws kapalı say
+        _wsConnected = false;
+        _wsLastError ??= "Using simulator (no WS data)";
+        _handleIncomingGlucose(v);
       });
-    } catch (e) {
-      debugPrint("WS parse error: $e");
-    }
-  }
-
-  void _scheduleReconnect() {
-    // zaten reconnect planlıysa tekrar planlama
-    if (_reconnectTimer?.isActive ?? false) return;
-
-    // 2 saniye sonra tekrar dene (basit)
-    _reconnectTimer = Timer(const Duration(seconds: 2), () {
-      if (!mounted) return;
-      _connectWs();
     });
   }
 
-  void _cleanupWs() {
-    try {
-      _wsSub?.cancel();
-      _wsSub = null;
-    } catch (_) {}
-    try {
-      _channel?.sink.close();
-      _channel = null;
-    } catch (_) {}
+  void _stopSimulator() {
+    _simTimer?.cancel();
+    _simTimer = null;
+  }
+
+  // ----------------------------------------
+  // ✅ ALERT ENGINE (in-app, no backend)
+  // ----------------------------------------
+  void _maybeTriggerAlerts() {
+    // We show alerts based on the value shown on live card:
+    final bool aiEnabled = _showAiOnLiveCard && _aiSeries.isNotEmpty;
+
+    final double? value =
+    aiEnabled ? (_aiCurrentValue ?? _wsLiveCurrentValue) : _wsLiveCurrentValue;
+
+    if (value == null) return;
+
+    // Rapid change mg/dL per min
+    _lastRateMgDlPerMin = _computeRateMgDlPerMin();
+
+    final now = DateTime.now();
+    final inQuietHours = _alertSettings.isInQuietHours(now);
+
+    // Determine alert type (priority order)
+    AlertType? type;
+
+    // Threshold alerts
+    if (value <= _alertSettings.lowThreshold) {
+      type = AlertType.low;
+    } else if (value >= _alertSettings.highThreshold) {
+      type = AlertType.high;
+    }
+
+    // Rapid change alert (if enabled) — only if not already low/high
+    if (type == null && _alertSettings.rapidChangeEnabled) {
+      final rate = _lastRateMgDlPerMin;
+      if (rate != null) {
+        if (rate <= -_alertSettings.rapidDropThresholdMgDlPerMin) {
+          type = AlertType.rapidDrop;
+        } else if (rate >= _alertSettings.rapidRiseThresholdMgDlPerMin) {
+          type = AlertType.rapidRise;
+        }
+      }
+    }
+
+    if (type == null) return;
+
+    // Debounce
+    if (_lastAlertAt != null && _lastAlertType != null) {
+      final dt = now.difference(_lastAlertAt!).inSeconds;
+      if (_lastAlertType == type && dt < _alertSettings.debounceSeconds) {
+        return;
+      }
+    }
+
+    // Quiet hours behavior:
+    // - If quiet hours, suppress sound for non-critical.
+    // - But for critical low, always do strong alert.
+    final bool critical = (type == AlertType.low);
+
+    // Haptic + sound
+    if (_alertSettings.soundEnabled && (!inQuietHours || critical)) {
+      SystemSound.play(SystemSoundType.alert);
+    }
+    if (_alertSettings.vibrationEnabled) {
+      HapticFeedback.mediumImpact();
+    }
+
+    // In-app banner
+    _showAlertSnack(type, value);
+
+    _lastAlertAt = now;
+    _lastAlertType = type;
+  }
+
+  double? _computeRateMgDlPerMin() {
+    // Need at least 2 points with ts
+    if (_wsLiveSeries.length < 2 || _wsLiveTs.length < 2) return null;
+
+    // Use last ~6 points window for smoother rate (or all available)
+    final int n = min(6, _wsLiveSeries.length);
+    final startIdx = _wsLiveSeries.length - n;
+
+    final v0 = _wsLiveSeries[startIdx];
+    final t0 = _wsLiveTs[startIdx];
+    final v1 = _wsLiveSeries.last;
+    final t1 = _wsLiveTs.last;
+
+    final dtSec = t1.difference(t0).inMilliseconds / 1000.0;
+    if (dtSec <= 0.5) return null;
+
+    final dv = v1 - v0;
+    final ratePerMin = dv / (dtSec / 60.0);
+    return ratePerMin;
+  }
+
+  void _showAlertSnack(AlertType type, double value) {
+    if (!mounted) return;
+
+    final msg = switch (type) {
+      AlertType.low => "LOW glucose: ${value.toStringAsFixed(0)} mg/dl",
+      AlertType.high => "HIGH glucose: ${value.toStringAsFixed(0)} mg/dl",
+      AlertType.rapidDrop =>
+      "Rapid drop detected (${_lastRateMgDlPerMin?.toStringAsFixed(1)} mg/dl/min)",
+      AlertType.rapidRise =>
+      "Rapid rise detected (${_lastRateMgDlPerMin?.toStringAsFixed(1)} mg/dl/min)",
+    };
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg, style: const TextStyle(fontWeight: FontWeight.w800)),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        action: SnackBarAction(
+          label: "Settings",
+          onPressed: _openAlertSettingsSheet,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openAlertSettingsSheet() async {
+    final updated = await showModalBottomSheet<AlertSettings>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => _AlertSettingsSheet(initial: _alertSettings),
+    );
+
+    if (updated != null) {
+      setState(() => _alertSettings = updated);
+      await _alertStore.save(updated);
+    }
+  }
+
+  void _openEmergencyDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text("Emergency Help"),
+        content: const Text(
+          "This is a demo emergency flow (no backend / no SMS).\n\n"
+              "In the real app, this would notify your selected caregiver/doctor with your latest glucose + trend + location link.",
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close")),
+        ],
+      ),
+    );
   }
 
   @override
   void initState() {
     super.initState();
-
     _months = _buildLast12Months();
     _setDailyMode();
 
-    // ✅ Başlat
-    _connectWs();
+    // ✅ Seed tips so UI never looks empty before data
+    _tipsEngine.seedIfNeeded(_aiTips);
+
+    // ✅ Load calibration
+    _calibStore.load().then((c) {
+      if (!mounted) return;
+      setState(() => _calib = c);
+    });
+
+    // ✅ Load alert settings
+    _alertStore.load().then((s) {
+      if (!mounted) return;
+      setState(() => _alertSettings = s);
+    });
+
+    // ✅ Start WS
+    if (_useWebSocketLive) {
+      _connectWs();
+
+      // WS 2-3 sn içinde gelmezse simulator başlat
+      Future.delayed(const Duration(seconds: 3), () {
+        if (!mounted) return;
+        if (!_receivedAnyWs) _startSimulatorIfNeeded();
+      });
+    } else {
+      _startSimulatorIfNeeded();
+    }
   }
 
   @override
   void dispose() {
-    _reconnectTimer?.cancel();
-    _cleanupWs();
+    try {
+      _channel?.sink.close();
+    } catch (_) {}
+    _stopSimulator();
     super.dispose();
   }
 
@@ -201,9 +495,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   late List<double> _monthlySeries; // e.g., 30 points
   late double _monthlyAvgValue;
 
-  // ----------------------------
-  // Month helpers
-  // ----------------------------
   List<_MonthItem> _buildLast12Months() {
     final now = DateTime.now();
     final items = <_MonthItem>[];
@@ -215,13 +506,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   String _monthLabel(DateTime d) {
-    const names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const names = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    ];
     return "${names[d.month - 1]} - ${d.year}";
   }
 
-  // ----------------------------
-  // MODE SETTERS
-  // ----------------------------
   void _setDailyMode() {
     setState(() {
       _monthlyMode = false;
@@ -240,9 +531,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  // ----------------------------
-  // Daily data (dummy)
-  // ----------------------------
   void _recomputeDailySeries() {
     final today = DateTime.now();
     final seed = (today.year * 10000 + today.month * 100 + today.day) * 1000 +
@@ -274,9 +562,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _dailyCurrentValue = series.last;
   }
 
-  // ----------------------------
-  // Monthly data (dummy)
-  // ----------------------------
   void _recomputeMonthlySeries() {
     final m = _selectedMonth!;
     final seed = (m.year * 100 + m.month) * 999;
@@ -294,14 +579,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     final avg = series.reduce((a, b) => a + b) / series.length;
-
     _monthlySeries = series;
     _monthlyAvgValue = avg;
   }
 
-  // ----------------------------
-  // Daily UI actions
-  // ----------------------------
   void _selectRange(int h) {
     if (_monthlyMode) return;
     setState(() {
@@ -332,32 +613,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return "Last $_selectedRange hours (previous x$_dayWindowOffset)";
   }
 
-  Color _statusColor(String s) {
-    final v = s.toUpperCase();
-    if (v.contains("LOW")) return const Color(0xFFFF9F1C);
-    if (v.contains("HIGH")) return const Color(0xFFE63946);
-    if (v.contains("NORMAL")) return const Color(0xFF2A9D8F);
-    return Colors.black45;
-  }
-
-  String _wsStateLabel() {
-    switch (_wsState) {
-      case _WsState.connecting:
-        return "WS: Connecting";
-      case _WsState.open:
-        return "WS: Open";
-      case _WsState.closed:
-        return "WS: Closed";
-      case _WsState.error:
-        return "WS: Error";
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     final displayName =
     (user?.displayName?.trim().isNotEmpty ?? false) ? user!.displayName! : "User";
+
+    // Raw live source
+    final liveSeriesRaw = _useWebSocketLive ? _wsLiveSeries : widget.liveSeries;
+
+    final liveValueRaw = _useWebSocketLive
+        ? _wsLiveCurrentValue
+        : (widget.liveCurrentValue ??
+        (liveSeriesRaw.isNotEmpty ? liveSeriesRaw.last : null));
+
+    // ✅ If enabled, show AI on Live card
+    final bool aiEnabled = _showAiOnLiveCard && _aiSeries.isNotEmpty;
+
+    final liveValueShown = aiEnabled ? (_aiCurrentValue ?? liveValueRaw) : liveValueRaw;
+    final liveSeriesShown = aiEnabled
+        ? (_aiSeries.isNotEmpty ? _aiSeries : liveSeriesRaw)
+        : liveSeriesRaw;
+
+    final liveTrendUp = aiEnabled
+        ? (_aiTrend == Trend.up
+        ? true
+        : (_aiTrend == Trend.down
+        ? false
+        : (liveSeriesShown.length >= 2
+        ? liveSeriesShown.last >= liveSeriesShown[liveSeriesShown.length - 2]
+        : true)))
+        : (liveSeriesShown.length >= 2
+        ? liveSeriesShown.last >= liveSeriesShown[liveSeriesShown.length - 2]
+        : true);
 
     final chartSeries = _monthlyMode ? _monthlySeries : _dailySeries;
     final mainValue = _monthlyMode ? _monthlyAvgValue : _dailyCurrentValue;
@@ -366,7 +654,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ? chartSeries.last >= chartSeries[chartSeries.length - 2]
         : true;
 
-    final statusColor = (_wsStatus == null) ? Colors.black45 : _statusColor(_wsStatus!);
+    // last update time (from any incoming glucose)
+    final DateTime? lastUpdate =
+    _wsLiveTs.isNotEmpty ? _wsLiveTs.last : null;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF4F1E8),
@@ -398,7 +688,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         actions: [
-          IconButton(onPressed: () {}, icon: const Icon(Icons.notifications_none_rounded)),
+          IconButton(
+            onPressed: _openAlertSettingsSheet,
+            icon: const Icon(Icons.tune_rounded),
+            tooltip: "Alert settings",
+          ),
+          IconButton(
+            onPressed: () {},
+            icon: const Icon(Icons.notifications_none_rounded),
+          ),
         ],
       ),
       body: LayoutBuilder(
@@ -411,17 +709,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  _LiveReadingCard(
-                    glucose: _wsGlucose,
-                    status: _wsStatus,
-                    ts: _wsTimestamp,
-                    statusColor: statusColor,
-                    wsLabel: _wsStateLabel(),
-                    wsUri: _wsUri.toString(),
-                    onReconnect: () => _connectWs(manual: true),
-                    lastError: _wsLastError,
-                  ),
+                  _LiveGlucoseCard(
+                    liveValue: liveValueShown,
+                    trendUp: liveTrendUp,
+                    series: liveSeriesShown,
+                    aiEnabled: aiEnabled,
+                    aiConfidence: _aiConfidence,
+                    aiRiskLabel: _riskText(_aiRisk),
 
+                    lowThreshold: _alertSettings.lowThreshold,
+                    highThreshold: _alertSettings.highThreshold,
+                    rateMgDlPerMin: _lastRateMgDlPerMin,
+                    onOpenSettings: _openAlertSettingsSheet,
+                    onEmergency: _openEmergencyDialog,
+
+                    // ✅ NEW (screenshot-style live WS header)
+                    wsLabel: _wsConnected ? "WS: Open" : "WS: Closed",
+                    wsUri: _wsUriDisplay,
+                    onReconnect: _connectWs,
+                    lastUpdate: lastUpdate,
+                    wsError: _wsLastError,
+                  ),
                   const SizedBox(height: 14),
 
                   _GlucoseHistoryCard(
@@ -452,7 +760,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  _TipsCardsAlwaysVisible(tips: widget.tips),
+
+                  _TipsCardsAlwaysVisible(tips: _mergedTipsForUI()),
 
                   const SizedBox(height: 24),
                 ],
@@ -461,163 +770,390 @@ class _DashboardScreenState extends State<DashboardScreen> {
           );
         },
       ),
-      floatingActionButton: null,
     );
   }
 }
 
 // ---------------------------------------------------------------------
-// ✅ Live Reading Card (no chart) + WS state info
+// ✅ Alerts settings model/store (NO BACKEND)
 // ---------------------------------------------------------------------
-class _LiveReadingCard extends StatelessWidget {
-  final double? glucose;
-  final String? status;
-  final DateTime? ts;
-  final Color statusColor;
+enum AlertType { low, high, rapidDrop, rapidRise }
 
-  final String wsLabel;
-  final String wsUri;
-  final VoidCallback onReconnect;
-  final String? lastError;
+class AlertSettings {
+  final double lowThreshold; // mg/dl
+  final double highThreshold; // mg/dl
 
-  const _LiveReadingCard({
-    required this.glucose,
-    required this.status,
-    required this.ts,
-    required this.statusColor,
-    required this.wsLabel,
-    required this.wsUri,
-    required this.onReconnect,
-    required this.lastError,
+  final bool rapidChangeEnabled;
+  final double rapidDropThresholdMgDlPerMin;
+  final double rapidRiseThresholdMgDlPerMin;
+
+  final bool soundEnabled;
+  final bool vibrationEnabled;
+
+  final bool quietHoursEnabled;
+  final int quietStartHour; // 0-23
+  final int quietEndHour; // 0-23
+
+  final int debounceSeconds;
+
+  const AlertSettings({
+    required this.lowThreshold,
+    required this.highThreshold,
+    required this.rapidChangeEnabled,
+    required this.rapidDropThresholdMgDlPerMin,
+    required this.rapidRiseThresholdMgDlPerMin,
+    required this.soundEnabled,
+    required this.vibrationEnabled,
+    required this.quietHoursEnabled,
+    required this.quietStartHour,
+    required this.quietEndHour,
+    required this.debounceSeconds,
   });
+
+  factory AlertSettings.defaults() => const AlertSettings(
+    lowThreshold: 70,
+    highThreshold: 170,
+    rapidChangeEnabled: true,
+    rapidDropThresholdMgDlPerMin: 3.0,
+    rapidRiseThresholdMgDlPerMin: 3.0,
+    soundEnabled: true,
+    vibrationEnabled: true,
+    quietHoursEnabled: true,
+    quietStartHour: 23,
+    quietEndHour: 7,
+    debounceSeconds: 20,
+  );
+
+  bool isInQuietHours(DateTime now) {
+    if (!quietHoursEnabled) return false;
+
+    final h = now.hour;
+    if (quietStartHour == quietEndHour) return false;
+
+    // Example: 23 -> 7 crosses midnight
+    if (quietStartHour > quietEndHour) {
+      return h >= quietStartHour || h < quietEndHour;
+    }
+    // Example: 21 -> 23 (same day)
+    return h >= quietStartHour && h < quietEndHour;
+  }
+
+  Map<String, dynamic> toJson() => {
+    'low': lowThreshold,
+    'high': highThreshold,
+    'rapidOn': rapidChangeEnabled,
+    'rapidDrop': rapidDropThresholdMgDlPerMin,
+    'rapidRise': rapidRiseThresholdMgDlPerMin,
+    'sound': soundEnabled,
+    'vibe': vibrationEnabled,
+    'quietOn': quietHoursEnabled,
+    'quietStart': quietStartHour,
+    'quietEnd': quietEndHour,
+    'debounce': debounceSeconds,
+  };
+
+  static AlertSettings fromJson(Map<String, dynamic> m) {
+    double d(String k, double def) => (m[k] is num) ? (m[k] as num).toDouble() : def;
+    int i(String k, int def) =>
+        (m[k] is int) ? m[k] as int : ((m[k] is num) ? (m[k] as num).toInt() : def);
+    bool b(String k, bool def) => (m[k] is bool) ? (m[k] as bool) : def;
+
+    return AlertSettings(
+      lowThreshold: d('low', 70),
+      highThreshold: d('high', 170),
+      rapidChangeEnabled: b('rapidOn', true),
+      rapidDropThresholdMgDlPerMin: d('rapidDrop', 3.0),
+      rapidRiseThresholdMgDlPerMin: d('rapidRise', 3.0),
+      soundEnabled: b('sound', true),
+      vibrationEnabled: b('vibe', true),
+      quietHoursEnabled: b('quietOn', true),
+      quietStartHour: i('quietStart', 23).clamp(0, 23),
+      quietEndHour: i('quietEnd', 7).clamp(0, 23),
+      debounceSeconds: i('debounce', 20).clamp(5, 120),
+    );
+  }
+
+  AlertSettings copyWith({
+    double? lowThreshold,
+    double? highThreshold,
+    bool? rapidChangeEnabled,
+    double? rapidDropThresholdMgDlPerMin,
+    double? rapidRiseThresholdMgDlPerMin,
+    bool? soundEnabled,
+    bool? vibrationEnabled,
+    bool? quietHoursEnabled,
+    int? quietStartHour,
+    int? quietEndHour,
+    int? debounceSeconds,
+  }) {
+    return AlertSettings(
+      lowThreshold: lowThreshold ?? this.lowThreshold,
+      highThreshold: highThreshold ?? this.highThreshold,
+      rapidChangeEnabled: rapidChangeEnabled ?? this.rapidChangeEnabled,
+      rapidDropThresholdMgDlPerMin:
+      rapidDropThresholdMgDlPerMin ?? this.rapidDropThresholdMgDlPerMin,
+      rapidRiseThresholdMgDlPerMin:
+      rapidRiseThresholdMgDlPerMin ?? this.rapidRiseThresholdMgDlPerMin,
+      soundEnabled: soundEnabled ?? this.soundEnabled,
+      vibrationEnabled: vibrationEnabled ?? this.vibrationEnabled,
+      quietHoursEnabled: quietHoursEnabled ?? this.quietHoursEnabled,
+      quietStartHour: quietStartHour ?? this.quietStartHour,
+      quietEndHour: quietEndHour ?? this.quietEndHour,
+      debounceSeconds: debounceSeconds ?? this.debounceSeconds,
+    );
+  }
+}
+
+class AlertSettingsStore {
+  static const _key = 'alert_settings_v1';
+
+  Future<AlertSettings> load() async {
+    final sp = await SharedPreferences.getInstance();
+    final raw = sp.getString(_key);
+    if (raw == null) return AlertSettings.defaults();
+    try {
+      final m = jsonDecode(raw);
+      if (m is Map) {
+        return AlertSettings.fromJson(m.map((k, v) => MapEntry(k.toString(), v)));
+      }
+      return AlertSettings.defaults();
+    } catch (_) {
+      return AlertSettings.defaults();
+    }
+  }
+
+  Future<void> save(AlertSettings s) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(_key, jsonEncode(s.toJson()));
+  }
+}
+
+class _AlertSettingsSheet extends StatefulWidget {
+  final AlertSettings initial;
+  const _AlertSettingsSheet({required this.initial});
+
+  @override
+  State<_AlertSettingsSheet> createState() => _AlertSettingsSheetState();
+}
+
+class _AlertSettingsSheetState extends State<_AlertSettingsSheet> {
+  late AlertSettings s;
+
+  @override
+  void initState() {
+    super.initState();
+    s = widget.initial;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final hasData = glucose != null && status != null;
+    final pad = MediaQuery.of(context).viewInsets.bottom;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text("Live Glucose", style: TextStyle(fontWeight: FontWeight.w900)),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF7B3FF2).withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.circle, size: 10, color: Color(0xFF7B3FF2)),
-                    SizedBox(width: 6),
-                    Text("LIVE", style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF7B3FF2), fontSize: 12)),
-                  ],
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 10),
-
-          // WS status row
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.06),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  wsLabel,
-                  style: const TextStyle(fontWeight: FontWeight.w800, color: Colors.black54, fontSize: 12),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  wsUri,
-                  style: const TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 12),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              IconButton(
-                tooltip: "Reconnect",
-                onPressed: onReconnect,
-                icon: const Icon(Icons.refresh_rounded),
-              ),
-            ],
-          ),
-
-          if (lastError != null) ...[
-            const SizedBox(height: 6),
-            Text(
-              lastError!,
-              style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700, fontSize: 11),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
+    Widget row(String title, Widget trailing) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w800))),
+            trailing,
           ],
+        ),
+      );
+    }
 
-          const SizedBox(height: 10),
+    return Padding(
+      padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + pad),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("Alert settings", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+            const SizedBox(height: 12),
 
-          if (!hasData) ...[
-            const Text(
-              "Waiting for live data…",
-              style: TextStyle(fontWeight: FontWeight.w800, color: Colors.black54),
-            ),
-            const SizedBox(height: 10),
-            const SizedBox(
-              height: 44,
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
+            row(
+              "Low threshold (mg/dl)",
+              _NumberStepper(
+                value: s.lowThreshold,
+                min: 40,
+                max: 120,
+                step: 5,
+                onChanged: (v) => setState(() => s = s.copyWith(lowThreshold: v)),
               ),
             ),
-          ] else ...[
+            row(
+              "High threshold (mg/dl)",
+              _NumberStepper(
+                value: s.highThreshold,
+                min: 120,
+                max: 300,
+                step: 5,
+                onChanged: (v) => setState(() => s = s.copyWith(highThreshold: v)),
+              ),
+            ),
+
+            const SizedBox(height: 8),
+            SwitchListTile(
+              value: s.rapidChangeEnabled,
+              onChanged: (v) => setState(() => s = s.copyWith(rapidChangeEnabled: v)),
+              title: const Text("Rapid change alerts", style: TextStyle(fontWeight: FontWeight.w800)),
+              subtitle: const Text("Warn if glucose rises/drops too fast."),
+            ),
+            if (s.rapidChangeEnabled) ...[
+              row(
+                "Rapid drop (mg/dl/min)",
+                _NumberStepper(
+                  value: s.rapidDropThresholdMgDlPerMin,
+                  min: 1,
+                  max: 10,
+                  step: 0.5,
+                  onChanged: (v) => setState(() => s = s.copyWith(rapidDropThresholdMgDlPerMin: v)),
+                ),
+              ),
+              row(
+                "Rapid rise (mg/dl/min)",
+                _NumberStepper(
+                  value: s.rapidRiseThresholdMgDlPerMin,
+                  min: 1,
+                  max: 10,
+                  step: 0.5,
+                  onChanged: (v) => setState(() => s = s.copyWith(rapidRiseThresholdMgDlPerMin: v)),
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 8),
+            SwitchListTile(
+              value: s.soundEnabled,
+              onChanged: (v) => setState(() => s = s.copyWith(soundEnabled: v)),
+              title: const Text("Sound", style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+            SwitchListTile(
+              value: s.vibrationEnabled,
+              onChanged: (v) => setState(() => s = s.copyWith(vibrationEnabled: v)),
+              title: const Text("Vibration", style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+
+            const SizedBox(height: 8),
+            SwitchListTile(
+              value: s.quietHoursEnabled,
+              onChanged: (v) => setState(() => s = s.copyWith(quietHoursEnabled: v)),
+              title: const Text("Quiet hours", style: TextStyle(fontWeight: FontWeight.w800)),
+              subtitle: const Text("Reduce sound at night (critical low still alerts)."),
+            ),
+            if (s.quietHoursEnabled) ...[
+              row(
+                "Quiet start hour",
+                _IntStepper(
+                  value: s.quietStartHour,
+                  min: 0,
+                  max: 23,
+                  onChanged: (v) => setState(() => s = s.copyWith(quietStartHour: v)),
+                ),
+              ),
+              row(
+                "Quiet end hour",
+                _IntStepper(
+                  value: s.quietEndHour,
+                  min: 0,
+                  max: 23,
+                  onChanged: (v) => setState(() => s = s.copyWith(quietEndHour: v)),
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 8),
+            row(
+              "Alert debounce (sec)",
+              _IntStepper(
+                value: s.debounceSeconds,
+                min: 5,
+                max: 120,
+                onChanged: (v) => setState(() => s = s.copyWith(debounceSeconds: v)),
+              ),
+            ),
+
+            const SizedBox(height: 14),
             Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Text(
-                  glucose!.toStringAsFixed(0),
-                  style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900),
-                ),
-                const SizedBox(width: 6),
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 6),
-                  child: Text("mg/dL", style: TextStyle(color: Colors.black54, fontWeight: FontWeight.w700)),
-                ),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: statusColor.withOpacity(0.30)),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text("Cancel", style: TextStyle(fontWeight: FontWeight.w800)),
                   ),
-                  child: Text(
-                    status!,
-                    style: TextStyle(color: statusColor, fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF7B3FF2)),
+                    onPressed: () => Navigator.pop(context, s),
+                    child: const Text("Save", style: TextStyle(fontWeight: FontWeight.w900, color: Colors.white)),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 10),
-            Text(
-              ts == null
-                  ? ""
-                  : "Last update: ${ts!.hour.toString().padLeft(2, '0')}:${ts!.minute.toString().padLeft(2, '0')}:${ts!.second.toString().padLeft(2, '0')}",
-              style: const TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 12),
-            ),
           ],
-        ],
+        ),
       ),
+    );
+  }
+}
+
+class _NumberStepper extends StatelessWidget {
+  final double value;
+  final double min;
+  final double max;
+  final double step;
+  final ValueChanged<double> onChanged;
+
+  const _NumberStepper({
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.step,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    void dec() => onChanged((value - step).clamp(min, max));
+    void inc() => onChanged((value + step).clamp(min, max));
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(onPressed: dec, icon: const Icon(Icons.remove_circle_outline)),
+        Text(value.toStringAsFixed(step < 1 ? 1 : 0), style: const TextStyle(fontWeight: FontWeight.w900)),
+        IconButton(onPressed: inc, icon: const Icon(Icons.add_circle_outline)),
+      ],
+    );
+  }
+}
+
+class _IntStepper extends StatelessWidget {
+  final int value;
+  final int min;
+  final int max;
+  final ValueChanged<int> onChanged;
+
+  const _IntStepper({
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    void dec() => onChanged((value - 1).clamp(min, max));
+    void inc() => onChanged((value + 1).clamp(min, max));
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(onPressed: dec, icon: const Icon(Icons.remove_circle_outline)),
+        Text("$value", style: const TextStyle(fontWeight: FontWeight.w900)),
+        IconButton(onPressed: inc, icon: const Icon(Icons.add_circle_outline)),
+      ],
     );
   }
 }
@@ -784,7 +1320,360 @@ class _TipCard extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------
-// History card + helpers (senin aynı yapın)
+// ✅ On-device "AI tips" engine (NO BACKEND)
+// ---------------------------------------------------------------------
+class AITipsEngine {
+  static const Duration _minInterval = Duration(seconds: 45);
+  final Map<TipType, DateTime> _lastAt = <TipType, DateTime>{};
+
+  void seedIfNeeded(List<TipItem> target) {
+    if (target.isNotEmpty) return;
+    final now = DateTime.now();
+    target.addAll([
+      TipItem(
+        type: TipType.food,
+        message: "When data arrives, I’ll suggest foods based on your trend/risk.",
+        createdAt: now,
+      ),
+      TipItem(
+        type: TipType.exercise,
+        message: "Light activity tips will appear here once we detect patterns.",
+        createdAt: now,
+      ),
+      TipItem(
+        type: TipType.medicine,
+        message: "Medication tips are general only—always follow your clinician’s plan.",
+        createdAt: now,
+      ),
+    ]);
+  }
+
+  void updateTips({
+    required List<TipItem> target,
+    required double mgDl,
+    required Trend trend,
+    required RiskLevel risk,
+    required double confidence,
+    required DateTime now,
+  }) {
+    final allow = confidence >= 0.45 || risk != RiskLevel.low;
+    if (!allow) return;
+
+    _maybeAdd(target, TipType.food, now, _foodTip(mgDl, trend, risk));
+    _maybeAdd(target, TipType.exercise, now, _exerciseTip(mgDl, trend, risk));
+    _maybeAdd(target, TipType.medicine, now, _medicineTip(mgDl, trend, risk));
+
+    if (target.length > 60) {
+      target.removeRange(0, target.length - 60);
+    }
+  }
+
+  void _maybeAdd(List<TipItem> target, TipType type, DateTime now, String msg) {
+    final last = _lastAt[type];
+    if (last != null && now.difference(last) < _minInterval) return;
+
+    final latestSameType = target.where((t) => t.type == type).toList()
+      ..sort((a, b) => (b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0))
+          .compareTo(a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0)));
+
+    if (latestSameType.isNotEmpty && latestSameType.first.message == msg) return;
+
+    target.add(TipItem(type: type, message: msg, createdAt: now));
+    _lastAt[type] = now;
+  }
+
+  String _foodTip(double g, Trend t, RiskLevel r) {
+    if (r == RiskLevel.high && t == Trend.down) {
+      return "Glucose falling fast: consider a quick carb source if you feel symptoms, then re-check.";
+    }
+    if (r == RiskLevel.high && t == Trend.up) {
+      return "Glucose rising: choose water + lower-carb options for the next snack/meal.";
+    }
+    if (g < 90) {
+      return "On the lower side: pair carbs with protein/fat (e.g., yogurt + fruit) to stabilize.";
+    }
+    if (g > 180) {
+      return "High range: prefer fiber/protein-heavy foods (vegetables, eggs, legumes) and skip sugary drinks.";
+    }
+    return "Stable range: keep balanced meals (protein + fiber + moderate carbs) to maintain this trend.";
+  }
+
+  String _exerciseTip(double g, Trend t, RiskLevel r) {
+    if (r == RiskLevel.high && t == Trend.down) {
+      return "If glucose is dropping, avoid intense exercise until it stabilizes.";
+    }
+    if (g > 200 && t != Trend.down) {
+      return "If you feel okay, a short walk after meals can help reduce spikes.";
+    }
+    if (g < 90) {
+      return "Lower range: choose light movement only and carry fast carbs just in case.";
+    }
+    return "Good time for light-to-moderate activity: 10–20 min walk or gentle stretching.";
+  }
+
+  String _medicineTip(double g, Trend t, RiskLevel r) {
+    if (r == RiskLevel.high) {
+      return "Risk elevated: follow your care plan and consider contacting a clinician if readings stay abnormal.";
+    }
+    if (g < 80) {
+      return "If you’re on glucose-lowering meds, monitor closely when low readings happen.";
+    }
+    if (g > 250) {
+      return "If readings are persistently very high, follow your clinician guidance (hydration, ketone check if applicable).";
+    }
+    return "General reminder: take meds as prescribed; this app doesn’t adjust doses.";
+  }
+}
+
+// ---------------------------------------------------------------------
+// Live card (NOW: screenshot-style WS + status + last update)
+// ---------------------------------------------------------------------
+class _LiveGlucoseCard extends StatelessWidget {
+  final double? liveValue;
+  final bool trendUp;
+  final List<double> series;
+
+  final bool aiEnabled;
+  final double aiConfidence;
+  final String aiRiskLabel;
+
+  final double lowThreshold;
+  final double highThreshold;
+  final double? rateMgDlPerMin;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onEmergency;
+
+  // ✅ NEW (WS header)
+  final String wsLabel;
+  final String wsUri;
+  final VoidCallback onReconnect;
+  final DateTime? lastUpdate;
+  final String? wsError;
+
+  const _LiveGlucoseCard({
+    required this.liveValue,
+    required this.trendUp,
+    required this.series,
+    this.aiEnabled = false,
+    this.aiConfidence = 0.0,
+    this.aiRiskLabel = "",
+
+    required this.lowThreshold,
+    required this.highThreshold,
+    required this.rateMgDlPerMin,
+    required this.onOpenSettings,
+    required this.onEmergency,
+
+    required this.wsLabel,
+    required this.wsUri,
+    required this.onReconnect,
+    required this.lastUpdate,
+    required this.wsError,
+  });
+
+  String _fmtTime(DateTime? t) {
+    if (t == null) return "";
+    final hh = t.hour.toString().padLeft(2, '0');
+    final mm = t.minute.toString().padLeft(2, '0');
+    final ss = t.second.toString().padLeft(2, '0');
+    return "$hh:$mm:$ss";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasData = series.isNotEmpty && liveValue != null;
+
+    final bool isLow = hasData && liveValue! <= lowThreshold;
+    final bool isHigh = hasData && liveValue! >= highThreshold;
+
+    final String statusText = !hasData
+        ? ""
+        : isLow
+        ? "LOW"
+        : isHigh
+        ? "HIGH"
+        : "NORMAL";
+
+    final Color statusColor = !hasData
+        ? const Color(0xFF4AA3A5)
+        : (isLow || isHigh)
+        ? Colors.redAccent
+        : const Color(0xFF4AA3A5);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Title + LIVE chip
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  "Live Glucose",
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF7B3FF2).withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.circle, size: 10, color: Color(0xFF7B3FF2)),
+                    const SizedBox(width: 6),
+                    Text(
+                      aiEnabled ? "AI LIVE" : "LIVE",
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF7B3FF2),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+
+          // WS row (screenshot-style)
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.06),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  wsLabel,
+                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: Colors.black87),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  wsUri,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12, color: Colors.black54),
+                ),
+              ),
+              IconButton(
+                tooltip: "Reconnect",
+                onPressed: onReconnect,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          ),
+
+          if (wsError != null && wsError!.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              wsError!,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.w700,
+                fontSize: 12,
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 10),
+
+          // Value + status pill (screenshot-style)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              if (!hasData) ...[
+                const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ] else ...[
+                Text(
+                  liveValue!.toStringAsFixed(0),
+                  style: TextStyle(
+                    fontSize: 40,
+                    fontWeight: FontWeight.w900,
+                    color: (isLow || isHigh) ? Colors.redAccent : Colors.black,
+                    height: 1.0,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Padding(
+                  padding: EdgeInsets.only(top: 10),
+                  child: Text(
+                    "mg/dL",
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.black54,
+                    ),
+                  ),
+                ),
+              ],
+              const Spacer(),
+              if (hasData)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: statusColor.withOpacity(0.14),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: statusColor.withOpacity(0.45)),
+                  ),
+                  child: Text(
+                    statusText,
+                    style: TextStyle(
+                      color: statusColor,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 12,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+
+          const SizedBox(height: 10),
+
+          // Last update
+          Text(
+            lastUpdate == null ? "" : "Last update: ${_fmtTime(lastUpdate)}",
+            style: const TextStyle(
+              color: Colors.black45,
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+            ),
+          ),
+
+          // (Keep your AI info line — optional)
+          if (hasData && aiEnabled) ...[
+            const SizedBox(height: 6),
+            Text(
+              "AI: $aiRiskLabel • Confidence ${(aiConfidence * 100).round()}%",
+              style: const TextStyle(color: Colors.black45, fontWeight: FontWeight.w600, fontSize: 11),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// History card + helpers (aynı)
 // ---------------------------------------------------------------------
 class _GlucoseHistoryCard extends StatelessWidget {
   final bool monthlyMode;
@@ -1047,7 +1936,11 @@ class _Pill extends StatelessWidget {
         decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14)),
         child: Text(
           text,
-          style: TextStyle(color: fg, fontWeight: FontWeight.w700, fontSize: 12),
+          style: TextStyle(
+            color: fg,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+          ),
         ),
       ),
     );
@@ -1055,7 +1948,7 @@ class _Pill extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------
-// Mini chart (history kısmı için aynı)
+// Mini chart
 // ---------------------------------------------------------------------
 class _MiniLineChart extends StatelessWidget {
   final List<double> values;

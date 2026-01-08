@@ -28,11 +28,12 @@ class DefaultFirebaseOptions {
         return macos;
       case TargetPlatform.windows:
         return windows;
+
+    // ✅ NEW: graceful fallback so app doesn't crash on linux builds
+    // If you truly don't support linux, you can keep throw instead.
       case TargetPlatform.linux:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for linux - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return web;
+
       default:
         throw UnsupportedError(
           'DefaultFirebaseOptions are not supported for this platform.',

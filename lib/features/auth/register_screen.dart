@@ -1,5 +1,12 @@
+import 'dart:math';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+
+// ✅ NEW (optional but recommended): for demo AI data without backend
+// If path differs in your project, fix this import.
+import '../home/glucose_store.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -28,8 +35,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   void _toast(String msg) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg)),
+      SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 
@@ -43,6 +54,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
         return "Password is too weak (use at least 6 characters).";
       case 'operation-not-allowed':
         return "Email/Password sign-in is not enabled in Firebase.";
+      case 'network-request-failed':
+        return "Network error. Check your connection.";
       default:
         return e.message ?? "Sign up failed.";
     }
@@ -85,8 +98,43 @@ class _RegisterScreenState extends State<RegisterScreen> {
       Navigator.of(context).pop(); // back to Login
     } on FirebaseAuthException catch (e) {
       _toast(_friendlyAuthError(e));
-    } catch (_) {
+    } catch (e) {
       _toast("Something went wrong. Please try again.");
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  // ✅ NEW: Seed demo AI glucose samples so Report + PDF works without backend
+  Future<void> _seedDemoData() async {
+    if (_loading) return;
+
+    setState(() => _loading = true);
+    try {
+      await GlucoseStore.clearAll();
+
+      final now = DateTime.now().toUtc();
+      final rng = Random(42);
+
+      // 14 days hourly samples
+      for (int i = 0; i < 14 * 24; i++) {
+        final ts = now.subtract(Duration(hours: i));
+
+        // smooth-ish daily pattern + noise
+        final base = 110 + 35 * sin(i / 6);
+        final noise = rng.nextDouble() * 18 - 9;
+        final val = (base + noise).clamp(55, 260).toDouble();
+
+        await GlucoseStore.addSample(
+          mgdl: val,
+          ts: ts,
+          source: GlucoseSource.ai,
+        );
+      }
+
+      _toast("Demo glucose data created ✅ (AI-tagged). Go to Report tab.");
+    } catch (e) {
+      _toast("Could not create demo data: $e");
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -94,148 +142,248 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.sizeOf(context);
+    const primary = Color(0xFF7B3FF2);
+    const bgTop = Color(0xFF6C2BD9);
+    const bgMid = Color(0xFF9B5CFF);
+    const bgBottom = Color(0xFFE2C9FF);
 
     return Scaffold(
-      body: Container(
-        width: double.infinity,
-        height: double.infinity,
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Color(0xFF6C2BD9),
-              Color(0xFF9B5CFF),
-              Color(0xFFE2C9FF),
-            ],
-          ),
-        ),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 22),
-            child: Column(
-              children: [
-                SizedBox(height: size.height * 0.05),
-
-                Row(
-                  children: [
-                    IconButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    ),
-                    const SizedBox(width: 6),
-                    const Text(
-                      "Create Account",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 16),
-
-                Container(
-                  width: 86,
-                  height: 86,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(28),
-                  ),
-                  child: const Icon(
-                    Icons.person_add_alt_1,
-                    color: Colors.white,
-                    size: 44,
-                  ),
-                ),
-
-                const SizedBox(height: 22),
-
-                // ✅ NEW: Full Name
-                _RoundedField(
-                  controller: _nameC,
-                  hint: "Full Name",
-                  icon: Icons.badge_outlined,
-                  keyboardType: TextInputType.name,
-                ),
-                const SizedBox(height: 14),
-
-                _RoundedField(
-                  controller: _emailC,
-                  hint: "Email",
-                  icon: Icons.email_outlined,
-                  keyboardType: TextInputType.emailAddress,
-                ),
-                const SizedBox(height: 14),
-
-                _RoundedField(
-                  controller: _passC,
-                  hint: "Password",
-                  icon: Icons.lock_outline,
-                  obscureText: _obscure1,
-                  suffix: IconButton(
-                    onPressed: () => setState(() => _obscure1 = !_obscure1),
-                    icon: Icon(
-                      _obscure1 ? Icons.visibility_off : Icons.visibility,
-                      color: Colors.white.withOpacity(0.85),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 14),
-
-                _RoundedField(
-                  controller: _pass2C,
-                  hint: "Confirm Password",
-                  icon: Icons.lock_reset,
-                  obscureText: _obscure2,
-                  suffix: IconButton(
-                    onPressed: () => setState(() => _obscure2 = !_obscure2),
-                    icon: Icon(
-                      _obscure2 ? Icons.visibility_off : Icons.visibility,
-                      color: Colors.white.withOpacity(0.85),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 20),
-
-                SizedBox(
-                  width: double.infinity,
-                  height: 52,
-                  child: ElevatedButton(
-                    onPressed: _loading ? null : _register,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF5A21D6),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(18),
-                      ),
-                      elevation: 0,
-                    ),
-                    child: _loading
-                        ? const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                        : const Text(
-                      "Create Account",
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 18),
-              ],
+      body: Stack(
+        children: [
+          // Background gradient
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [bgTop, bgMid, bgBottom],
+              ),
             ),
           ),
-        ),
+
+          // Blur overlay (same vibe as Login)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                child: Container(color: Colors.white.withOpacity(0.06)),
+              ),
+            ),
+          ),
+
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: Column(
+                    children: [
+                      // Header row
+                      Row(
+                        children: [
+                          IconButton(
+                            onPressed: _loading ? null : () => Navigator.of(context).pop(),
+                            icon: const Icon(Icons.arrow_back, color: Colors.white),
+                          ),
+                          const SizedBox(width: 6),
+                          const Text(
+                            "Create Account",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 10),
+
+                      // Icon badge
+                      Container(
+                        width: 86,
+                        height: 86,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.18),
+                          borderRadius: BorderRadius.circular(28),
+                          border: Border.all(color: Colors.white.withOpacity(0.20)),
+                        ),
+                        child: const Icon(
+                          Icons.person_add_alt_1,
+                          color: Colors.white,
+                          size: 44,
+                        ),
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      // Form card
+                      Container(
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.18),
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(color: Colors.white.withOpacity(0.22)),
+                          boxShadow: [
+                            BoxShadow(
+                              blurRadius: 26,
+                              offset: const Offset(0, 14),
+                              color: Colors.black.withOpacity(0.16),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          children: [
+                            _RoundedField(
+                              controller: _nameC,
+                              hint: "Full Name",
+                              icon: Icons.badge_outlined,
+                              keyboardType: TextInputType.name,
+                              enabled: !_loading,
+                            ),
+                            const SizedBox(height: 14),
+
+                            _RoundedField(
+                              controller: _emailC,
+                              hint: "Email",
+                              icon: Icons.email_outlined,
+                              keyboardType: TextInputType.emailAddress,
+                              enabled: !_loading,
+                            ),
+                            const SizedBox(height: 14),
+
+                            _RoundedField(
+                              controller: _passC,
+                              hint: "Password",
+                              icon: Icons.lock_outline,
+                              obscureText: _obscure1,
+                              enabled: !_loading,
+                              suffix: IconButton(
+                                onPressed: _loading ? null : () => setState(() => _obscure1 = !_obscure1),
+                                icon: Icon(
+                                  _obscure1 ? Icons.visibility_off : Icons.visibility,
+                                  color: Colors.white.withOpacity(0.85),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+
+                            _RoundedField(
+                              controller: _pass2C,
+                              hint: "Confirm Password",
+                              icon: Icons.lock_reset,
+                              obscureText: _obscure2,
+                              enabled: !_loading,
+                              suffix: IconButton(
+                                onPressed: _loading ? null : () => setState(() => _obscure2 = !_obscure2),
+                                icon: Icon(
+                                  _obscure2 ? Icons.visibility_off : Icons.visibility,
+                                  color: Colors.white.withOpacity(0.85),
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 18),
+
+                            SizedBox(
+                              width: double.infinity,
+                              height: 52,
+                              child: ElevatedButton(
+                                onPressed: _loading ? null : _register,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF5A21D6),
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(18),
+                                  ),
+                                  elevation: 0,
+                                ),
+                                child: _loading
+                                    ? const SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                                    : const Text(
+                                  "Create Account",
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            // ✅ NEW: Dev tools (no backend). Optional but very useful for demo.
+                            const SizedBox(height: 14),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.14),
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(color: Colors.white.withOpacity(0.20)),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.auto_awesome_rounded, color: Colors.white.withOpacity(0.95)),
+                                      const SizedBox(width: 8),
+                                      const Expanded(
+                                        child: Text(
+                                          "Developer Tools",
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    "Create demo AI glucose samples so Report + PDF works without backend.",
+                                    style: TextStyle(
+                                      color: Colors.white.withOpacity(0.85),
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    height: 46,
+                                    child: OutlinedButton.icon(
+                                      onPressed: _loading ? null : _seedDemoData,
+                                      icon: const Icon(Icons.bolt_rounded, color: Colors.white),
+                                      label: const Text(
+                                        "Generate Demo AI Data",
+                                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
+                                      ),
+                                      style: OutlinedButton.styleFrom(
+                                        side: BorderSide(color: Colors.white.withOpacity(0.55)),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 18),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -248,6 +396,7 @@ class _RoundedField extends StatelessWidget {
   final TextInputType? keyboardType;
   final bool obscureText;
   final Widget? suffix;
+  final bool enabled;
 
   const _RoundedField({
     required this.controller,
@@ -256,6 +405,7 @@ class _RoundedField extends StatelessWidget {
     this.keyboardType,
     this.obscureText = false,
     this.suffix,
+    this.enabled = true,
   });
 
   @override
@@ -265,19 +415,21 @@ class _RoundedField extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.18),
         borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withOpacity(0.18)),
       ),
       child: TextField(
         controller: controller,
+        enabled: enabled,
         keyboardType: keyboardType,
         obscureText: obscureText,
-        style: const TextStyle(color: Colors.white),
+        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
         decoration: InputDecoration(
           border: InputBorder.none,
           contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           prefixIcon: Icon(icon, color: Colors.white.withOpacity(0.9)),
           suffixIcon: suffix,
           hintText: hint,
-          hintStyle: TextStyle(color: Colors.white.withOpacity(0.7)),
+          hintStyle: TextStyle(color: Colors.white.withOpacity(0.7), fontWeight: FontWeight.w700),
         ),
       ),
     );
