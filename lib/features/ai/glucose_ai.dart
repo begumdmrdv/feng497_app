@@ -9,7 +9,6 @@ class GlucosePrediction {
   final double confidence; // 0..1 (heuristic)
   final RiskLevel risk30m;
 
-  // ✅ NEW: human-readable explanation (optional)
   final String? explain;
 
   const GlucosePrediction({
@@ -21,10 +20,6 @@ class GlucosePrediction {
   });
 }
 
-/// ✅ NEW: Standard input frame for BOTH simulator + real live mapping
-/// You can feed either:
-/// - glucose mg/dL directly (if WS sends glucose)
-/// - OR sensor features (sweatRate/temp/ph/current) + calibration elsewhere
 class SensorFrame {
   final DateTime ts;
   final double? glucoseMgDl; // optional direct glucose
@@ -43,18 +38,8 @@ class SensorFrame {
   });
 }
 
-/// On-device "AI-ish" forecasting from glucose time-series.
-/// No backend, no extra packages.
-///
-/// IMPORTANT:
-/// This is forecasting/smoothing (not a medical model).
 class GlucoseAi {
-  /// Basic predictor from glucose values.
-  ///
-  /// Params:
-  /// - window: how many latest points to use
-  /// - sampleMinutes: expected sampling interval (e.g., 5 for CGM-like)
-  /// - forecastMinutes: how far to project (default 5)
+
   static GlucosePrediction? predict(
       List<double> rawSeries, {
         int window = 12,
@@ -102,8 +87,6 @@ class GlucoseAi {
     );
   }
 
-  /// ✅ NEW: Predictor from SensorFrames (takes glucoseMgDl if present).
-  /// This lets you keep ONE pipeline: simulator fills frames; live fills frames later.
   static GlucosePrediction? predictFromFrames(
       List<SensorFrame> frames, {
         int window = 12,
@@ -147,7 +130,6 @@ class GlucoseAi {
     return 0.40;
   }
 
-  /// ✅ NEW: 30-min risk based on a 30-min projection (time-aware).
   static RiskLevel _riskHeuristic30m({
     required double currentMgDl,
     required double slopePerMin,
@@ -200,7 +182,6 @@ class GlucoseAi {
     return sqrt(varSum / (v.length - 1));
   }
 
-  // ✅ NEW: sanitize input (removes NaN/inf, clamps absurd values)
   static List<double> _cleanSeries(List<double> raw) {
     final out = <double>[];
     for (final x in raw) {
@@ -212,7 +193,6 @@ class GlucoseAi {
     return out;
   }
 
-  // ✅ NEW: short explain string (for UI / report)
   static String _explain(
       double mgDl,
       double slopePerMin,

@@ -120,6 +120,49 @@ class _ActivityScreenState extends State<ActivityScreen> {
     for (final c in ActivityCategory.values) c: <ActivityEntry>[],
   };
 
+  // ----------------------------
+  // ✅ ON-DEVICE "AI Tips" (NO BACKEND)
+  // ----------------------------
+  final ActivityTipsEngine _tipsEngine = ActivityTipsEngine();
+  final List<ActivityTipItem> _aiTips = <ActivityTipItem>[];
+
+  void _refreshAiTips() {
+    _tipsEngine.seedIfNeeded(_aiTips);
+
+    _tipsEngine.updateTips(
+      target: _aiTips,
+      date: _selectedDate,
+      goalMinutesPerWeek: _goalMinutesPerWeek,
+      goalSessionsPerWeek: _goalSessionsPerWeek,
+      totalMinutesToday: _todayTotalMinutes,
+      sessionsToday: _todaySessions,
+      perCategoryMinutes: _minutesByCategory(),
+      perCategorySessions: _sessionsByCategory(),
+    );
+
+    // keep short history
+    if (_aiTips.length > 40) {
+      _aiTips.removeRange(0, _aiTips.length - 40);
+    }
+  }
+
+  Map<ActivityCategory, int> _minutesByCategory() {
+    final m = <ActivityCategory, int>{};
+    for (final c in ActivityCategory.values) {
+      final list = _entries[c] ?? const <ActivityEntry>[];
+      m[c] = list.fold<int>(0, (a, b) => a + b.minutes);
+    }
+    return m;
+  }
+
+  Map<ActivityCategory, int> _sessionsByCategory() {
+    final m = <ActivityCategory, int>{};
+    for (final c in ActivityCategory.values) {
+      m[c] = (_entries[c] ?? const <ActivityEntry>[]).length;
+    }
+    return m;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -195,6 +238,9 @@ class _ActivityScreenState extends State<ActivityScreen> {
       } catch (_) {}
     }
 
+    // ✅ update AI tips
+    _refreshAiTips();
+
     setState(() => _loading = false);
   }
 
@@ -234,8 +280,10 @@ class _ActivityScreenState extends State<ActivityScreen> {
   // “Your Program completed” logic:
   // It completes as user logs sessions/minutes for the day.
   // (If you later want weekly aggregation, we can sum last 7 days.)
-  double get _progressMinutes => (_todayTotalMinutes / max(1, _goalMinutesPerWeek)).clamp(0.0, 1.0);
-  double get _progressSessions => (_todaySessions / max(1, _goalSessionsPerWeek)).clamp(0.0, 1.0);
+  double get _progressMinutes =>
+      (_todayTotalMinutes / max(1, _goalMinutesPerWeek)).clamp(0.0, 1.0);
+  double get _progressSessions =>
+      (_todaySessions / max(1, _goalSessionsPerWeek)).clamp(0.0, 1.0);
 
   int clamp0(int v) => max(0, v);
 
@@ -244,8 +292,18 @@ class _ActivityScreenState extends State<ActivityScreen> {
   // -----------------------
   String _prettyDate(DateTime d) {
     const months = [
-      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec"
     ];
     return "${d.day} ${months[d.month - 1]} ${d.year}";
   }
@@ -273,7 +331,8 @@ class _ActivityScreenState extends State<ActivityScreen> {
     );
 
     if (picked != null) {
-      setState(() => _selectedDate = DateTime(picked.year, picked.month, picked.day));
+      setState(() =>
+      _selectedDate = DateTime(picked.year, picked.month, picked.day));
       await _loadAllForDate(_selectedDate);
     }
   }
@@ -292,6 +351,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
     setState(() {
       _goalMinutesPerWeek = result.goalMinutesPerWeek;
       _goalSessionsPerWeek = result.goalSessionsPerWeek;
+      _refreshAiTips(); // ✅
     });
 
     await _saveProgramSettings();
@@ -316,6 +376,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
 
     setState(() {
       _entries[category] = [entry, ...(_entries[category] ?? [])];
+      _refreshAiTips(); // ✅
     });
 
     await _saveCurrentDate();
@@ -323,7 +384,9 @@ class _ActivityScreenState extends State<ActivityScreen> {
 
   Future<void> _removeEntry(ActivityEntry e) async {
     setState(() {
-      _entries[e.category] = (_entries[e.category] ?? []).where((x) => x.id != e.id).toList();
+      _entries[e.category] =
+          (_entries[e.category] ?? []).where((x) => x.id != e.id).toList();
+      _refreshAiTips(); // ✅
     });
     await _saveCurrentDate();
   }
@@ -335,7 +398,9 @@ class _ActivityScreenState extends State<ActivityScreen> {
         title: const Text("Clear day?"),
         content: const Text("This will remove all activities for the selected date."),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Cancel")),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text("Cancel")),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () => Navigator.pop(context, true),
@@ -351,6 +416,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
       for (final c in ActivityCategory.values) {
         _entries[c] = <ActivityEntry>[];
       }
+      _refreshAiTips(); // ✅
     });
     await _saveCurrentDate();
   }
@@ -392,13 +458,15 @@ class _ActivityScreenState extends State<ActivityScreen> {
           Row(
             children: [
               Text(_prettyDate(_selectedDate),
-                  style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w900, fontSize: 16)),
               const Spacer(),
               TextButton(
                 onPressed: _clearDay,
                 child: const Text(
                   "Clear",
-                  style: TextStyle(color: Colors.red, fontWeight: FontWeight.w800),
+                  style: TextStyle(
+                      color: Colors.red, fontWeight: FontWeight.w800),
                 ),
               ),
             ],
@@ -421,7 +489,8 @@ class _ActivityScreenState extends State<ActivityScreen> {
           const SizedBox(height: 16),
 
           // Areas of Focus (no more)
-          const Text("Areas of Focus", style: TextStyle(fontWeight: FontWeight.w900)),
+          const Text("Areas of Focus",
+              style: TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 12),
 
           // grid
@@ -456,10 +525,386 @@ class _ActivityScreenState extends State<ActivityScreen> {
           ),
 
           const SizedBox(height: 18),
+
+          // ✅ AI Tips section
+          Row(
+            children: [
+              const Text("AI Coach Tips",
+                  style: TextStyle(fontWeight: FontWeight.w900)),
+              const Spacer(),
+              TextButton(
+                onPressed: () {
+                  setState(() => _refreshAiTips());
+                },
+                child: const Text("Refresh"),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _ActivityTipsCardsAlwaysVisible(tips: _aiTips),
+
+          const SizedBox(height: 18),
         ],
       ),
       // AI assistant removed
       floatingActionButton: null,
+    );
+  }
+}
+
+// ------------------------------------------------------------
+// ✅ On-device AI Tips model/engine/widgets (NO BACKEND)
+// ------------------------------------------------------------
+enum ActivityTipType { food, exercise, medicine }
+
+class ActivityTipItem {
+  final ActivityTipType type;
+  final String message;
+  final DateTime createdAt;
+
+  const ActivityTipItem({
+    required this.type,
+    required this.message,
+    required this.createdAt,
+  });
+}
+
+class ActivityTipsEngine {
+  static const Duration _minInterval = Duration(seconds: 35);
+  final Map<ActivityTipType, DateTime> _lastAt = <ActivityTipType, DateTime>{};
+
+  void seedIfNeeded(List<ActivityTipItem> target) {
+    if (target.isNotEmpty) return;
+    final now = DateTime.now();
+    target.addAll([
+      ActivityTipItem(
+        type: ActivityTipType.exercise,
+        message: "Log an activity and I’ll recommend the next best move for consistency.",
+        createdAt: now,
+      ),
+      ActivityTipItem(
+        type: ActivityTipType.food,
+        message: "Food tips will adapt to your activity intensity and duration.",
+        createdAt: now,
+      ),
+      ActivityTipItem(
+        type: ActivityTipType.medicine,
+        message: "General reminder: this app never adjusts doses—follow your clinician plan.",
+        createdAt: now,
+      ),
+    ]);
+  }
+
+  void updateTips({
+    required List<ActivityTipItem> target,
+    required DateTime date,
+    required int goalMinutesPerWeek,
+    required int goalSessionsPerWeek,
+    required int totalMinutesToday,
+    required int sessionsToday,
+    required Map<ActivityCategory, int> perCategoryMinutes,
+    required Map<ActivityCategory, int> perCategorySessions,
+  }) {
+    final now = DateTime.now();
+
+    // If user is viewing a past day, keep tips more neutral (avoid “do it now”)
+    final isToday = _sameDay(date, DateTime.now());
+
+    final int hiitMin = perCategoryMinutes[ActivityCategory.hiit] ?? 0;
+    final int strengthMin = perCategoryMinutes[ActivityCategory.strength] ?? 0;
+    final int walkMin = perCategoryMinutes[ActivityCategory.walkRun] ?? 0;
+    final int yogaMin = perCategoryMinutes[ActivityCategory.yoga] ?? 0;
+    final int cycleMin = perCategoryMinutes[ActivityCategory.cycling] ?? 0;
+
+    final double minutesProgress =
+    (totalMinutesToday / max(1, goalMinutesPerWeek)).clamp(0.0, 2.0);
+    final double sessionsProgress =
+    (sessionsToday / max(1, goalSessionsPerWeek)).clamp(0.0, 2.0);
+
+    // ----- EXERCISE TIP
+    final ex = _exerciseTip(
+      isToday: isToday,
+      totalMinutes: totalMinutesToday,
+      sessions: sessionsToday,
+      minutesProgress: minutesProgress,
+      sessionsProgress: sessionsProgress,
+      hiitMin: hiitMin,
+      strengthMin: strengthMin,
+      walkMin: walkMin,
+      yogaMin: yogaMin,
+      cycleMin: cycleMin,
+    );
+    _maybeAdd(target, ActivityTipType.exercise, now, ex);
+
+    // ----- FOOD TIP
+    final food = _foodTip(
+      isToday: isToday,
+      totalMinutes: totalMinutesToday,
+      hiitMin: hiitMin,
+      strengthMin: strengthMin,
+      walkMin: walkMin,
+      yogaMin: yogaMin,
+      cycleMin: cycleMin,
+    );
+    _maybeAdd(target, ActivityTipType.food, now, food);
+
+    // ----- MEDICINE TIP (generic / safety)
+    final med = _medicineTip(
+      isToday: isToday,
+      totalMinutes: totalMinutesToday,
+      hiitMin: hiitMin,
+    );
+    _maybeAdd(target, ActivityTipType.medicine, now, med);
+  }
+
+  bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  void _maybeAdd(
+      List<ActivityTipItem> target, ActivityTipType type, DateTime now, String msg) {
+    final last = _lastAt[type];
+    if (last != null && now.difference(last) < _minInterval) return;
+
+    final latestSameType = target.where((t) => t.type == type).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    if (latestSameType.isNotEmpty && latestSameType.first.message == msg) return;
+
+    target.add(ActivityTipItem(type: type, message: msg, createdAt: now));
+    _lastAt[type] = now;
+  }
+
+  String _exerciseTip({
+    required bool isToday,
+    required int totalMinutes,
+    required int sessions,
+    required double minutesProgress,
+    required double sessionsProgress,
+    required int hiitMin,
+    required int strengthMin,
+    required int walkMin,
+    required int yogaMin,
+    required int cycleMin,
+  }) {
+    if (!isToday) {
+      if (totalMinutes == 0) return "No activity logged on this day.";
+      if (hiitMin > 0) return "HIIT day: good job. Ensure recovery (sleep + hydration).";
+      if (strengthMin > 0) return "Strength logged: aim to balance with light cardio on other days.";
+      if (walkMin + cycleMin > 0) return "Cardio day: consistency beats intensity—keep it regular.";
+      if (yogaMin > 0) return "Yoga logged: great for mobility—pair with a short walk on other days.";
+      return "Nice variety—keep a balanced weekly routine.";
+    }
+
+    if (totalMinutes == 0 && sessions == 0) {
+      return "Start small: 10–15 min walk today. Consistency first.";
+    }
+    if (hiitMin >= 20) {
+      return "You did HIIT: avoid another intense session today—do light walk/stretch instead.";
+    }
+    if (strengthMin >= 30 && walkMin == 0 && cycleMin == 0) {
+      return "After strength, add a 10 min easy walk to cool down and support recovery.";
+    }
+
+    if (minutesProgress < 0.35 && sessionsProgress < 0.5) {
+      return "You’re building momentum: add one short session (10–20 min) to close the gap.";
+    }
+    if (minutesProgress >= 1.0 || sessionsProgress >= 1.0) {
+      return "You’re on track. Keep it light now—mobility or easy walk to maintain consistency.";
+    }
+    return "Good progress—finish with a gentle 10 min walk or yoga to support recovery.";
+  }
+
+  String _foodTip({
+    required bool isToday,
+    required int totalMinutes,
+    required int hiitMin,
+    required int strengthMin,
+    required int walkMin,
+    required int yogaMin,
+    required int cycleMin,
+  }) {
+    if (totalMinutes == 0) {
+      return isToday
+          ? "No activity yet: choose a balanced meal (protein + fiber) to keep energy stable."
+          : "No activity: keep meals balanced (protein + fiber + moderate carbs).";
+    }
+
+    final highIntensity = hiitMin > 0 || strengthMin > 0;
+    final longCardio = (walkMin + cycleMin) >= 45;
+
+    if (highIntensity) {
+      return "Post-workout: prioritize protein + water. Add carbs only if you feel drained.";
+    }
+    if (longCardio) {
+      return "Long cardio: hydrate and add electrolytes if needed. Choose carbs with fiber after.";
+    }
+    if (yogaMin >= 30) {
+      return "Mobility day: keep meals light—protein + vegetables works well.";
+    }
+    return "Nice work: a balanced snack (yogurt + fruit / nuts) can help recovery.";
+  }
+
+  String _medicineTip({
+    required bool isToday,
+    required int totalMinutes,
+    required int hiitMin,
+  }) {
+    // Safety-first, non-prescriptive
+    if (!isToday) {
+      return "Reminder: this app does not change medication. Always follow your clinician’s plan.";
+    }
+
+    if (hiitMin > 0) {
+      return "If you use glucose-lowering meds, monitor closely after intense exercise. Follow your care plan.";
+    }
+    if (totalMinutes > 0) {
+      return "General reminder: stay hydrated and follow prescribed medication schedule (no dose changes here).";
+    }
+    return "General reminder: medication tips are informational only—follow your clinician guidance.";
+  }
+}
+
+class _ActivityTipsCardsAlwaysVisible extends StatelessWidget {
+  final List<ActivityTipItem> tips;
+  const _ActivityTipsCardsAlwaysVisible({required this.tips});
+
+  String _latestFor(ActivityTipType type) {
+    final filtered = tips.where((t) => t.type == type).toList();
+    if (filtered.isEmpty) return "Waiting for AI suggestions…";
+    filtered.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return filtered.first.message;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, c) {
+        final w = c.maxWidth;
+        final isVeryNarrow = w < 360;
+
+        if (isVeryNarrow) {
+          return Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              SizedBox(
+                width: (w - 12) / 2,
+                child: _TipCard(
+                  title: "Foods",
+                  message: _latestFor(ActivityTipType.food),
+                  color: const Color(0xFF1F5EA8),
+                  icon: Icons.fastfood_rounded,
+                ),
+              ),
+              SizedBox(
+                width: (w - 12) / 2,
+                child: _TipCard(
+                  title: "Exercises",
+                  message: _latestFor(ActivityTipType.exercise),
+                  color: const Color(0xFFCDA1FF),
+                  icon: Icons.directions_run_rounded,
+                ),
+              ),
+              SizedBox(
+                width: (w - 12) / 2,
+                child: _TipCard(
+                  title: "Medicine",
+                  message: _latestFor(ActivityTipType.medicine),
+                  color: const Color(0xFFFFC45C),
+                  icon: Icons.medication_rounded,
+                ),
+              ),
+            ],
+          );
+        }
+
+        return Row(
+          children: [
+            Expanded(
+              child: _TipCard(
+                title: "Foods",
+                message: _latestFor(ActivityTipType.food),
+                color: const Color(0xFF1F5EA8),
+                icon: Icons.fastfood_rounded,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _TipCard(
+                title: "Exercises",
+                message: _latestFor(ActivityTipType.exercise),
+                color: const Color(0xFFCDA1FF),
+                icon: Icons.directions_run_rounded,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _TipCard(
+                title: "Medicine",
+                message: _latestFor(ActivityTipType.medicine),
+                color: const Color(0xFFFFC45C),
+                icon: Icons.medication_rounded,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _TipCard extends StatelessWidget {
+  final String title;
+  final String message;
+  final Color color;
+  final IconData icon;
+
+  const _TipCard({
+    required this.title,
+    required this.message,
+    required this.color,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 160,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(18)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.25),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(icon, color: Colors.white),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            title,
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.95),
+              fontWeight: FontWeight.w600,
+              fontSize: 11,
+              height: 1.25,
+            ),
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
     );
   }
 }
